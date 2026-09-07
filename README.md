@@ -2,6 +2,8 @@
 
 A local reverse proxy that caps FreeInference at one in-flight upstream request at a time and queues the rest, so parallel clients stop hitting the provider's per-account concurrency limit.
 
+> **Not affiliated.** This is an independent, unofficial tool. It is not made by, endorsed by, or connected to FreeInference in any way. It is a small concurrency-gate utility I wrote so I can use FreeInference from Hermes without tripping the provider's concurrent-request limit. It only limits how many requests reach FreeInference at once; it does not change, wrap, or replace the FreeInference service itself. Use it at your own risk and respect FreeInference's terms of service.
+
 ## Features
 
 - **Serializes requests.** A global semaphore holds upstream concurrency at exactly 1. Any request that arrives while one is in flight queues instead of failing.
@@ -96,7 +98,11 @@ This forwards only `/__dashboard` and its `/__api/requests` fetch. The raw proxy
 
 ## Limitations
 
-No TLS, no auth, no multi-account support. FreeInference caps concurrency per account, and this proxy assumes a single account. For spreading load across multiple accounts, use a different tool; for gating one account locally, this is the whole job.
+No TLS and no authentication: by default it binds `127.0.0.1`, so it is only reachable on the machine it runs on and nothing is exposed to the network. If you expose it beyond localhost via the bridge, add your own auth or firewall rules.
+
+This tool only throttles concurrency. It does not add models, routes, billing, or anything else on top of FreeInference; you still need a working FreeInference account and API key.
+
+This project is not affiliated with or endorsed by FreeInference. See the notice at the top.
 
 ## License
 
