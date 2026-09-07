@@ -93,25 +93,69 @@ def _db() -> sqlite3.Connection:
         " status INTEGER NOT NULL,"
         " waited_s REAL NOT NULL,"
         " dur_s REAL NOT NULL,"
-        " user_agent TEXT NOT NULL)"
+        " user_agent TEXT NOT NULL,"
+        " input_tokens INTEGER NOT NULL DEFAULT 0,"
+        " output_tokens INTEGER NOT NULL DEFAULT 0)"
     )
+    # In-place migration for DBs created before token columns existed.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+    if "input_tokens" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0")
+    if "output_tokens" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_at ON requests(at DESC)")
     return conn
 
 
-def record_request(method, path, status, waited_s, dur_s, ua) -> None:
+def record_request(method, path, status, waited_s, dur_s, ua,
+                   input_tokens=0, output_tokens=0) -> None:
     with _db_lock:
         conn = _db()
         try:
             conn.execute(
-                "INSERT INTO requests (at, ts, method, path, status, waited_s, dur_s, user_agent)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO requests (at, ts, method, path, status, waited_s, dur_s,"
+                " user_agent, input_tokens, output_tokens)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), time.strftime("%Y-%m-%d %H:%M:%S"),
-                 method, path, status, waited_s, dur_s, ua),
+                 method, path, status, waited_s, dur_s, ua,
+                 int(input_tokens or 0), int(output_tokens or 0)),
             )
             conn.commit()
         finally:
             conn.close()
+
+
+def parse_usage_tokens(body: bytes) -> tuple[int, int]:
+    """Extract input/output tokens from an OpenAI-compatible response body.
+
+    Reads `usage.prompt_tokens` / `usage.completion_tokens`. Tolerates the SSE
+    framing used by streaming chat completions, where a final `data:` line
+    carries the usage object, and returns (0, 0) on any parse failure."""
+    if not body:
+        return 0, 0
+    try:
+        text = body.decode("utf-8", "replace")
+    except Exception:
+        return 0, 0
+    # Non-streaming JSON, or an SSE line carrying the usage payload.
+    candidates = []
+    if text.lstrip().startswith("{"):
+        candidates.append(json.loads(text))
+    else:
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                if payload and payload not in ("[DONE]",):
+                    try:
+                        candidates.append(json.loads(payload))
+                    except (json.JSONDecodeError, ValueError):
+                        continue  # non-JSON SSE lines (event names, plain text)
+    for obj in candidates:
+        usage = obj.get("usage") if isinstance(obj, dict) else None
+        if isinstance(usage, dict):
+            return (int(usage.get("prompt_tokens") or 0),
+                    int(usage.get("completion_tokens") or 0))
+    return 0, 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -158,7 +202,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn = _db()
                     try:
                         rows = conn.execute(
-                            "SELECT id, ts, method, path, status, waited_s, dur_s, user_agent"
+                            "SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
+                            " input_tokens, output_tokens"
                             " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
                     finally:
                         conn.close()
@@ -170,6 +215,7 @@ class Handler(BaseHTTPRequestHandler):
                             "method": r["method"], "path": r["path"],
                             "status": r["status"], "waited_s": r["waited_s"],
                             "dur_s": r["dur_s"], "user_agent": r["user_agent"],
+                            "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
                         }
                         self.wfile.write(("data: %s\n\n" % json.dumps(payload)).encode())
                     self.wfile.flush()
@@ -205,18 +251,42 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 50
             limit = max(1, min(limit, 500))
+            # Time window: today / 7d / all (default all).
+            rng = "all"
+            if "range=" in self.path:
+                cand = self.path.split("range=")[-1].split("&")[0].strip().lower()
+                if cand in ("today", "7d", "all"):
+                    rng = cand
+            now = time.time()
+            if rng == "today":
+                start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
+                where, params = "WHERE at >= ?", (start,)
+            elif rng == "7d":
+                where, params = "WHERE at >= ?", (now - 7 * 86400,)
+            else:
+                where, params = "", ()
             with _db_lock:
                 conn = _db()
                 rows = conn.execute(
-                    "SELECT id, ts, method, path, status, waited_s, dur_s, user_agent"
-                    " FROM requests ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+                    f"SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
+                    f" input_tokens, output_tokens FROM requests {where}"
+                    f" ORDER BY id DESC LIMIT ?", params + (limit,)).fetchall()
                 total, errs = conn.execute(
                     "SELECT COUNT(*), SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)"
-                    " FROM requests").fetchone()
+                    f" FROM requests {where}", params).fetchone()
+                tin, tout = conn.execute(
+                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)"
+                    f" FROM requests {where}", params).fetchone()
+                avgq = conn.execute(
+                    "SELECT COALESCE(AVG(waited_s),0) FROM requests"
+                    f" {where}", params).fetchone()[0]
                 conn.close()
             self._reply_json(200, {
                 "requests": [dict(r) for r in rows],
                 "total": total, "errors": errs or 0,
+                "range": rng,
+                "input_tokens": int(tin or 0), "output_tokens": int(tout or 0),
+                "avg_queue_s": round(float(avgq or 0), 3),
             })
             return True
         if self.path.startswith("/__dashboard"):
@@ -303,15 +373,20 @@ class Handler(BaseHTTPRequestHandler):
             if is_stream:
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
+                tail = bytearray()  # bounded tail for token capture
                 try:
                     for chunk in upstream.iter_content(chunk_size=1024):
                         if not chunk:
                             continue
                         self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
-                    self.wfile.write(b"0\r\n\r\n")
+                        tail.extend(chunk)
+                        if len(tail) > 65536:  # ponytail: keep last 64KB for usage tail
+                            del tail[: len(tail) - 65536]
                 except (BrokenPipeError, ConnectionResetError):
                     log(json.dumps({"event": "client_disconnected", "path": self.path}))
                     return  # finally still releases the gate
+                self.wfile.write(b"0\r\n\r\n")  # terminate the chunked stream
+                in_tok, out_tok = parse_usage_tokens(bytes(tail))
             else:
                 data = upstream.content  # buffer non-streaming bodies (models, errors)
                 self.send_header("Content-Length", str(len(data)))
@@ -321,16 +396,18 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     log(json.dumps({"event": "client_disconnected", "path": self.path}))
                     return
+                in_tok, out_tok = parse_usage_tokens(data)
 
             ua = fwd_headers.get("User-Agent", "")
             log(json.dumps({
                 "event": "request", "method": self.command, "path": self.path,
                 "status": upstream.status_code, "waited_s": waited_s,
                 "dur_s": round(time.monotonic() - t0, 3),
-                "user_agent": ua,
+                "user_agent": ua, "input_tokens": in_tok, "output_tokens": out_tok,
             }))
             record_request(self.command, self.path, upstream.status_code,
-                           waited_s, round(time.monotonic() - t0, 3), ua)
+                           waited_s, round(time.monotonic() - t0, 3), ua,
+                           in_tok, out_tok)
         finally:
             _gate.release()
 

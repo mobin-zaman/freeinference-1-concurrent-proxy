@@ -75,6 +75,8 @@ class UpstreamHandler(BaseHTTPRequestHandler):
                 return
             if self.headers.get("X-Want-SSE"):
                 data = b"data: first\n\ndata: second\n\n"
+                if self.headers.get("X-Want-Usage"):
+                    data += b'data: {"usage":{"prompt_tokens":3,"completion_tokens":9}}\n\ndata: [DONE]\n\n'
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("X-Upstream-Saw", str(self.headers.get("X-Marker", "")))
@@ -83,6 +85,11 @@ class UpstreamHandler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 return
             payload = json.dumps({"ok": True, "path": self.path}).encode()
+            if self.headers.get("X-Want-Usage"):
+                payload = json.dumps({
+                    "ok": True, "path": self.path,
+                    "usage": {"prompt_tokens": 11, "completion_tokens": 22},
+                }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("X-Upstream-Saw", str(self.headers.get("X-Marker", "")))
@@ -154,7 +161,8 @@ def db_rows(path, limit=100):
     try:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
-            "SELECT method, path, status, waited_s, dur_s, user_agent"
+            "SELECT method, path, status, waited_s, dur_s, user_agent,"
+            " input_tokens, output_tokens"
             " FROM requests ORDER BY id LIMIT ?", (limit,)).fetchall()]
     finally:
         conn.close()
@@ -187,7 +195,12 @@ def test_local_endpoints_never_reach_upstream(proxy_server, upstream):
 
     r = requests.get(f"{base}/__api/requests?limit=5")
     assert r.status_code == 200
-    assert r.json() == {"requests": [], "total": 0, "errors": 0}
+    body = r.json()
+    assert body["requests"] == []
+    assert body["total"] == 0
+    assert body["errors"] == 0
+    assert body["input_tokens"] == 0
+    assert body["output_tokens"] == 0
 
     r = requests.get(f"{base}/favicon.ico")
     assert r.status_code == 204
@@ -348,3 +361,70 @@ def test_history_row_recorded(proxy_server, upstream):
     assert rows[0]["status"] == 200
     assert rows[0]["user_agent"] == "test-suite/1.0"
     assert rows[0]["waited_s"] == 0
+
+
+def test_tokens_recorded_from_buffered_response(proxy_server, upstream):
+    """Non-streaming chat completions: usage.prompt_tokens/completion_tokens are stored."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/chat/completions", headers={"X-Want-Usage": "1"}, timeout=30)
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["input_tokens"] == 11
+    assert rows[0]["output_tokens"] == 22
+
+
+def test_tokens_recorded_from_streaming_response(proxy_server, upstream):
+    """Streaming responses: the final SSE chunk carries usage; it is captured."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/chat/completions",
+                 headers={"X-Want-SSE": "1", "X-Want-Usage": "1"}, timeout=30)
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["input_tokens"] == 3
+    assert rows[0]["output_tokens"] == 9
+
+
+def test_no_usage_means_zero_tokens(proxy_server, upstream):
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", timeout=30)
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["input_tokens"] == 0
+    assert rows[0]["output_tokens"] == 0
+
+
+def test_api_range_filter(proxy_server, upstream):
+    """range=today / range=7d / range=all filter rows and aggregate totals."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    # three requests, all happening "now"
+    for _ in range(3):
+        requests.get(f"{base}/v1/models", headers={"X-Want-Usage": "1"}, timeout=30)
+    wait_for_rows(proxy_server["db"], 3)  # all rows committed before querying the API
+
+    r_today = requests.get(f"{base}/__api/requests?range=today&limit=50", timeout=5).json()
+    r_all = requests.get(f"{base}/__api/requests?range=all&limit=50", timeout=5).json()
+    r_7d = requests.get(f"{base}/__api/requests?range=7d&limit=50", timeout=5).json()
+
+    # all three in the window (fresh DB, all at now)
+    assert r_today["total"] == 3
+    assert r_7d["total"] == 3
+    assert r_all["total"] == 3
+    # token aggregates sum the three 11/22 rows
+    assert r_all["input_tokens"] == 33
+    assert r_all["output_tokens"] == 66
+    assert r_all["range"] == "all"
+    assert r_all["requests"][0]["input_tokens"] == 11
+    # avg queue time over the window is a number (>= 0)
+    assert isinstance(r_all["avg_queue_s"], (int, float))
+    assert r_all["avg_queue_s"] >= 0
+
+
+def test_api_range_invalid_defaults_to_all(proxy_server, upstream):
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", headers={"X-Want-Usage": "1"}, timeout=30)
+    wait_for_rows(proxy_server["db"], 1)
+    r = requests.get(f"{base}/__api/requests?range=bogus", timeout=5).json()
+    assert r["total"] == 1
+    assert r["input_tokens"] == 11

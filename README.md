@@ -16,7 +16,9 @@ A local reverse proxy that caps FreeInference at one in-flight upstream request 
 - **Serializes requests.** A global semaphore holds upstream concurrency at exactly 1. Any request that arrives while one is in flight queues instead of failing.
 - **OpenAI-compatible endpoint.** Point any OpenAI SDK client at `http://127.0.0.1:8788`; the proxy forwards to `freeinference.org` untouched.
 - **Streaming passthrough.** Chat completions are relayed token-by-token with chunked encoding, so a long generation streams back live.
-- **Real-time dashboard.** A single self-contained HTML page shows request activity over Server-Sent Events (no polling, no client build step), plus a JSON history API.
+- **Real-time dashboard.** A single self-contained HTML page shows request activity over Server-Sent Events (no polling, no client build step), with input/output token counts, Today/7 days/All-time filtering, and a light/dark theme toggle.
+- **Token usage captured.** For chat completions, `usage.prompt_tokens` and `usage.completion_tokens` are read from the upstream response (streaming and non-streaming) and stored per request.
+- **Queue metrics.** The dashboard shows queue hits and average queue time, so you can see how often and how long requests waited behind the gate.
 - **Local only by default.** Binds `127.0.0.1`; no auth or TLS because nothing is exposed to the network. An optional bridge exposes just the dashboard on another interface.
 - **Honest queues.** Every request is written to SQLite with its queue-wait and duration, so you can see what waited and why.
 
@@ -66,12 +68,12 @@ The proxy is a `ThreadingHTTPServer`; each request runs in its own thread. The i
 
 1. **Strip hop-by-hop headers.** `Connection`, `Transfer-Encoding`, `Content-Encoding`, and similar are removed; the rest are forwarded.
 2. **Acquire the gate.** A `threading.BoundedSemaphore(GATE_LIMIT)` with `GATE_LIMIT = 1` blocks the thread. If it waits longer than `ACQUIRE_TIMEOUT` (300s), the caller gets a local `429` with `Retry-After: 5` and nothing goes upstream.
-3. **Forward.** The request is sent to `freeinference.org` with a streaming body. SSE responses (`text/event-stream`) are relayed chunk by chunk with `Transfer-Encoding: chunked`; other bodies are buffered and re-sent with `Content-Length`.
+3. **Forward.** The request is sent to `freeinference.org` with a streaming body. SSE responses (`text/event-stream`) are relayed chunk by chunk with `Transfer-Encoding: chunked`; other bodies are buffered and re-sent with `Content-Length`. For chat completions the token usage is captured from the response (the buffered body, or the final SSE chunk) before it is relayed.
 4. **Release the gate.**
 
-Each completed request is written to SQLite (method, path, status, queue wait, duration, user agent) and one JSON line to the log. A nonzero `waited_s` means it queued behind another request.
+Each completed request is written to SQLite (method, path, status, queue wait, duration, user agent, input/output tokens) and one JSON line to the log. A nonzero `waited_s` means it queued behind another request.
 
-Three read-only endpoints bypass the gate and never count against the concurrency limit: the dashboard HTML, the recent-requests JSON, and the SSE stream the dashboard subscribes to.
+Three read-only endpoints bypass the gate and never count against the concurrency limit: the dashboard HTML, the recent-requests JSON (accepts `range=today|7d|all`), and the SSE stream the dashboard subscribes to.
 
 ## Options
 
