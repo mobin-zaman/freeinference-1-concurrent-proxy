@@ -4,6 +4,13 @@ A local reverse proxy that caps FreeInference at one in-flight upstream request 
 
 > **Not affiliated.** This is an independent, unofficial tool. It is not made by, endorsed by, or connected to FreeInference in any way. It is a small concurrency-gate utility I wrote so I can use FreeInference from Hermes without tripping the provider's concurrent-request limit. It only limits how many requests reach FreeInference at once; it does not change, wrap, or replace the FreeInference service itself. Use it at your own risk and respect FreeInference's terms of service.
 
+> **Warning: account ban risk.** FreeInference's terms can terminate your account for circumventing or gaming its request limits. Two things in particular can get you banned:
+>
+> 1. **Changing the User-Agent.** Do not spoof or rewrite the User-Agent header your client sends to FreeInference (for example to hide the calling library). Send your real User-Agent. This tool forwards the header untouched for exactly that reason.
+> 2. **Concurrency evasion.** Any tool whose purpose is to get more concurrent requests than FreeInference's free tier allows is a terms-of-service risk. This proxy exists so concurrent callers queue and stay inside the per-account limit; it does not raise that limit, and it must not be used to push past it.
+
+> This project is provided as-is for legitimate, single-account use. You are responsible for how you use it and for complying with FreeInference's terms. If asked, it is not worth losing your account over.
+
 ## Features
 
 - **Serializes requests.** A global semaphore holds upstream concurrency at exactly 1. Any request that arrives while one is in flight queues instead of failing.
