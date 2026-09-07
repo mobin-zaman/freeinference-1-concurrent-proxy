@@ -6,20 +6,32 @@ Auto-generated text is boring. Here is the short version of why this exists.
 
 ## Why I built it
 
-FreeInference's free tier lets you run 1 to 2 concurrent requests per account. I hit a hard wall on this the hard way: live `429 Too many concurrent requests (limit: 1)` from the upstream, and a community catalog saying the same thing ("2 Max Concurrent Requests").
+FreeInference's free tier lets you run 1 to 2 concurrent requests per account. I found this out the annoying way: a live `429 Too many concurrent requests (limit: 1)` from the upstream, and the community catalog agreeing with it.
 
-The problem is that an AI agent like Hermes does not make one request at a time. A single turn fires a main call plus auxiliary vision and compression calls plus delegation children. All of those hit FreeInference in one burst. The provider answers with `429` and the requests just fail. You do not get a model answer; you get an error.
+The catch is that the agent I run (Hermes) never fires one request at a time. A single turn sends a main call plus vision and compression sub-calls plus delegation children, all at once. FreeInference sees that burst and answers `429`. The whole turn fails even though the model was ready to answer.
 
-I could have throttled inside the agent, but that meant touching every place that sends a request. The cleaner fix is one choke point in front of the provider. This proxy is that choke point: it allows exactly one request upstream at any moment and puts every other caller in a queue. The second request waits instead of failing. The agent never sees the concurrency error because the concurrency never happens upstream.
+I did not want to throttle inside the agent, because every call site would need its own limiter and a new one appears every time I add a feature. One choke point in front of the provider does the same thing with a single implementation. Requests queue up behind it, one goes through at a time, and the burst never forms.
 
-The proxy sits only in front of the FreeInference provider entry. Every other provider connects directly and is untouched.
+This proxy sits only in front of the FreeInference provider entry. Other providers connect directly and stay untouched.
 
 ## How it works
 
-- Global gate of `1` in-flight request, implemented as a semaphore. Every request after the first waits.
-- Callers that wait longer than `300s` get a local `429` with `Retry-After: 5`. Upstream requests can run up to `900s`, so a long generation will not die to a premature connect timeout.
-- Authorization passes through verbatim from the client. No secrets live in this repo.
-- Each request lands in a SQLite history file with method, path, status, queue wait, duration, and user agent.
+The proxy is a `ThreadingHTTPServer` on `127.0.0.1:8788`. Every request runs in its own thread. Two threads matter: the caller's thread and the upstream's.
+
+1. **Read the body and headers.** Hop-by-hop headers (`Connection`, `Transfer-Encoding`, `Content-Encoding`, and friends) are stripped; everything else is forwarded.
+2. **Acquire the gate.** A `threading.BoundedSemaphore(GATE_LIMIT)` with `GATE_LIMIT = 1`. `acquire(timeout=300)` blocks the thread. If it times out, the caller gets a local `429` with `Retry-After: 5`; nothing goes upstream.
+3. **Forward.** `requests.request` sends the request to `freeinference.org`, streaming the response body. Streaming (`content-type: text/event-stream`) is relayed chunk-by-chunk with `Transfer-Encoding: chunked` so the caller sees tokens as they arrive. Non-streaming bodies (model lists, errors) are buffered and re-sent with a `Content-Length`.
+4. **Release the gate.**
+
+Each completed request is written to a SQLite row and one JSON line to the log file. `waited_s` is the time spent blocked on the gate; a nonzero value means it queued behind another request, which is the serialization working.
+
+Three local read-only endpoints bypass the gate entirely and never count toward the concurrency limit: the dashboard HTML, the recent-requests JSON, and an SSE stream the dashboard subscribes to for live updates.
+
+Concrete numbers that shape behaviour:
+
+- `GATE_LIMIT = 1` — at most one request is upstream at any instant.
+- `ACQUIRE_TIMEOUT = 300`s — a caller waits up to 5 minutes in the queue before it gives up with a local `429`.
+- `READ_TIMEOUT = (30, 900)` — 30s to connect, 900s to finish. Long generations do not die to a read timeout.
 
 ## The dashboard
 
