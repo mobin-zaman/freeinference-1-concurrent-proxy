@@ -9,7 +9,7 @@ A local reverse proxy that caps FreeInference at one in-flight upstream request 
 > 1. **Changing the User-Agent.** Do not spoof or rewrite the User-Agent header your client sends to FreeInference (for example to hide the calling library). Send your real User-Agent. This tool forwards the header untouched for exactly that reason.
 > 2. **Concurrency evasion.** Any tool whose purpose is to get more concurrent requests than FreeInference's free tier allows is a terms-of-service risk. This proxy exists so concurrent callers queue and stay inside the per-account limit; it does not raise that limit, and it must not be used to push past it.
 
-> This project is provided as-is for legitimate, single-account use. You are responsible for how you use it and for complying with FreeInference's terms. If asked, it is not worth losing your account over.
+> This project is provided as-is for legitimate, single-account use. You are responsible for how you use it and for complying with FreeInference's terms.
 
 ## Features
 
