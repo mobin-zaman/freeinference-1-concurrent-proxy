@@ -251,18 +251,20 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 50
             limit = max(1, min(limit, 500))
-            # Time window: today / 7d / all (default all).
+            # Time window: today / 7d / 30d / all (default all).
             rng = "all"
             if "range=" in self.path:
                 cand = self.path.split("range=")[-1].split("&")[0].strip().lower()
-                if cand in ("today", "7d", "all"):
-                    rng = cand
+                if cand in ("today", "7d", "30d", "all"):
+                                    rng = cand
             now = time.time()
             if rng == "today":
                 start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
                 where, params = "WHERE at >= ?", (start,)
             elif rng == "7d":
                 where, params = "WHERE at >= ?", (now - 7 * 86400,)
+            elif rng == "30d":
+                where, params = "WHERE at >= ?", (now - 30 * 86400,)
             else:
                 where, params = "", ()
             with _db_lock:

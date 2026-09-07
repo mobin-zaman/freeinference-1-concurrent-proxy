@@ -134,6 +134,7 @@
   [data-seg="0"] .seg-pill { transform: translateX(0); }
   [data-seg="1"] .seg-pill { transform: translateX(100%); }
   [data-seg="2"] .seg-pill { transform: translateX(200%); }
+  [data-seg="3"] .seg-pill { transform: translateX(300%); }
 
   .refresh {
     font-family: var(--mono); font-size: 11px; color: var(--muted);
@@ -341,6 +342,7 @@
         <span class="seg-pill" aria-hidden="true"></span>
         <button data-range="today" class="active">Today</button>
         <button data-range="7d">7 days</button>
+        <button data-range="30d">Last 30 days</button>
         <button data-range="all">All time</button>
       </div>
       <button class="theme-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme">
@@ -397,6 +399,7 @@
 const $ = (id) => document.getElementById(id);
 let firstPaint = true;
 let shownRange = 'all';
+let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
 
 // ---- Theme ----
 function setTheme(t, persist = true) {
@@ -417,10 +420,21 @@ $('theme-btn').addEventListener('click', () => {
 // ---- Range filter ----
 const seg = $('seg');
 function setRange(range) {
-  const idx = { today: 0, '7d': 1, all: 2 }[range] ?? 2;
+  const idx = { today: 0, '7d': 1, '30d': 2, all: 3 }[range] ?? 3;
   seg.setAttribute('data-seg', idx);
   seg.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.range === range));
   shownRange = range;
+  const now = Date.now() / 1000;
+  if (range === 'today') {
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    rangeStart = midnight.getTime() / 1000;
+  } else if (range === '7d') {
+    rangeStart = now - 7 * 86400;
+  } else if (range === '30d') {
+    rangeStart = now - 30 * 86400;
+  } else {
+    rangeStart = 0;
+  }
   load();
 }
 seg.querySelectorAll('button').forEach((b) =>
@@ -532,8 +546,8 @@ function prependRow(r) {
     const first = seen.values().next().value;
     seen.delete(first);
   }
-  // if a non-'all' window is shown, a brand-new row may not belong to it; skip
-  if (shownRange !== 'all') return;
+  // Filter by the active window: a brand-new row may fall outside today/7d/30d.
+  if (rangeStart && r.at < rangeStart) return;
   const tbody = $('rows');
   const empty = tbody.querySelector('.empty');
   if (empty) tbody.innerHTML = '';
