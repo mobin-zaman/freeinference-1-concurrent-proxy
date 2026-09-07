@@ -1,71 +1,68 @@
 # FreeInference 1-concurrent request proxy
 
-A local reverse proxy that caps FreeInference at one in-flight upstream request at a time and queues the rest.
+A local reverse proxy that caps FreeInference at one in-flight upstream request at a time and queues the rest, so parallel clients stop hitting the provider's per-account concurrency limit.
 
-Auto-generated text is boring. Here is the short version of why this exists.
+## Features
 
-## Why I built it
+- **Serializes requests.** A global semaphore holds upstream concurrency at exactly 1. Any request that arrives while one is in flight queues instead of failing.
+- **OpenAI-compatible endpoint.** Point any OpenAI SDK client at `http://127.0.0.1:8788`; the proxy forwards to `freeinference.org` untouched.
+- **Streaming passthrough.** Chat completions are relayed token-by-token with chunked encoding, so a long generation streams back live.
+- **Real-time dashboard.** A single self-contained HTML page shows request activity over Server-Sent Events (no polling, no client build step), plus a JSON history API.
+- **Local only by default.** Binds `127.0.0.1`; no auth or TLS because nothing is exposed to the network. An optional bridge exposes just the dashboard on another interface.
+- **Honest queues.** Every request is written to SQLite with its queue-wait and duration, so you can see what waited and why.
 
-FreeInference's free tier lets you run 1 to 2 concurrent requests per account. I found this out the annoying way: a live `429 Too many concurrent requests (limit: 1)` from the upstream, and the community catalog agreeing with it.
+## Why you'd use it
 
-The catch is that the agent I run (Hermes) never fires one request at a time. A single turn sends a main call plus vision and compression sub-calls plus delegation children, all at once. FreeInference sees that burst and answers `429`. The whole turn fails even though the model was ready to answer.
+FreeInference's free tier allows 1 to 2 concurrent requests per account. An agent like Hermes fires a main request plus vision, compression, and delegation sub-requests in a burst, which trips that limit and returns `429`. Pointing the agent at this proxy instead of FreeInference directly collapses the burst into a serial queue: one request at a time upstream, the rest wait, and nothing fails with a concurrency error.
 
-I did not want to throttle inside the agent, because every call site would need its own limiter and a new one appears every time I add a feature. One choke point in front of the provider does the same thing with a single implementation. Requests queue up behind it, one goes through at a time, and the burst never forms.
+It sits only in front of the FreeInference provider. Every other provider connects directly and is untouched.
 
-This proxy sits only in front of the FreeInference provider entry. Other providers connect directly and stay untouched.
-
-## How it works
-
-The proxy is a `ThreadingHTTPServer` on `127.0.0.1:8788`. Every request runs in its own thread. Two threads matter: the caller's thread and the upstream's.
-
-1. **Read the body and headers.** Hop-by-hop headers (`Connection`, `Transfer-Encoding`, `Content-Encoding`, and friends) are stripped; everything else is forwarded.
-2. **Acquire the gate.** A `threading.BoundedSemaphore(GATE_LIMIT)` with `GATE_LIMIT = 1`. `acquire(timeout=300)` blocks the thread. If it times out, the caller gets a local `429` with `Retry-After: 5`; nothing goes upstream.
-3. **Forward.** `requests.request` sends the request to `freeinference.org`, streaming the response body. Streaming (`content-type: text/event-stream`) is relayed chunk-by-chunk with `Transfer-Encoding: chunked` so the caller sees tokens as they arrive. Non-streaming bodies (model lists, errors) are buffered and re-sent with a `Content-Length`.
-4. **Release the gate.**
-
-Each completed request is written to a SQLite row and one JSON line to the log file. `waited_s` is the time spent blocked on the gate; a nonzero value means it queued behind another request, which is the serialization working.
-
-Three local read-only endpoints bypass the gate entirely and never count toward the concurrency limit: the dashboard HTML, the recent-requests JSON, and an SSE stream the dashboard subscribes to for live updates.
-
-Concrete numbers that shape behaviour:
-
-- `GATE_LIMIT = 1` — at most one request is upstream at any instant.
-- `ACQUIRE_TIMEOUT = 300`s — a caller waits up to 5 minutes in the queue before it gives up with a local `429`.
-- `READ_TIMEOUT = (30, 900)` — 30s to connect, 900s to finish. Long generations do not die to a read timeout.
-
-## The dashboard
-
-Because a one-at-a-time queue hides queued work, the proxy logs every request and serves a real-time dashboard on the same port. It is a single self-contained HTML file, dark theme, no build step, no dependencies, and it updates live over Server-Sent Events (no page refresh, no polling).
-
-Read-only endpoints, all served locally and never counted against the upstream gate:
-
-- `/__dashboard` the dashboard
-- `/__api/requests?limit=N` the recent-requests JSON
-- `/__api/events` the SSE stream
+## Screenshot
 
 ![FreeInference proxy dashboard](docs/dashboard.png)
 
 ## Install
 
-Python 3.9+ and `requests`.
+Requires Python 3.9+ and `requests`.
 
 ```bash
 pip install -r requirements.txt
-# or from source
+# or, from the source tree
 pip install .
 ```
 
-Then run:
+## Quick start
 
 ```bash
 freeinference-serial-proxy
 ```
 
-Defaults: listens on `127.0.0.1:8788`, forwards to `https://freeinference.org`, data written to `~/.local/share/freeinference-1-concurrent-proxy/`.
+Defaults:
 
-Point an OpenAI-compatible client at `http://127.0.0.1:8788`. Set the API key as you normally would for FreeInference; the proxy forwards it untouched.
+- listens on `127.0.0.1:8788`
+- forwards to `https://freeinference.org`
+- writes data to `~/.local/share/freeinference-1-concurrent-proxy/`
 
-Point your browser at `http://127.0.0.1:8788/__dashboard`.
+Now point an OpenAI-compatible client at `http://127.0.0.1:8788`. Set the API key the way you normally would for FreeInference; the proxy forwards it verbatim.
+
+Open the dashboard in a browser:
+
+```
+http://127.0.0.1:8788/__dashboard
+```
+
+## How it works
+
+The proxy is a `ThreadingHTTPServer`; each request runs in its own thread. The interesting part is the handoff between the caller's thread and the upstream's.
+
+1. **Strip hop-by-hop headers.** `Connection`, `Transfer-Encoding`, `Content-Encoding`, and similar are removed; the rest are forwarded.
+2. **Acquire the gate.** A `threading.BoundedSemaphore(GATE_LIMIT)` with `GATE_LIMIT = 1` blocks the thread. If it waits longer than `ACQUIRE_TIMEOUT` (300s), the caller gets a local `429` with `Retry-After: 5` and nothing goes upstream.
+3. **Forward.** The request is sent to `freeinference.org` with a streaming body. SSE responses (`text/event-stream`) are relayed chunk by chunk with `Transfer-Encoding: chunked`; other bodies are buffered and re-sent with `Content-Length`.
+4. **Release the gate.**
+
+Each completed request is written to SQLite (method, path, status, queue wait, duration, user agent) and one JSON line to the log. A nonzero `waited_s` means it queued behind another request.
+
+Three read-only endpoints bypass the gate and never count against the concurrency limit: the dashboard HTML, the recent-requests JSON, and the SSE stream the dashboard subscribes to.
 
 ## Options
 
@@ -88,18 +85,18 @@ systemctl --user enable --now freeinference-serial-proxy
 
 ## Dashboard on another interface (optional)
 
-The proxy binds `127.0.0.1` only, so it cannot listen on a network interface directly. If you want the dashboard reachable somewhere else (say on a Tailscale IP) without exposing the raw proxy API there, run the included bridge:
+The proxy binds `127.0.0.1` only, so it cannot listen on a network interface directly. If you want the dashboard reachable elsewhere, say a Tailscale IP, without exposing the raw proxy API there, run the included bridge:
 
 ```bash
 freeinference-dashboard-bridge --listen-host <your.ip> --port 8789 \
   --target-host 127.0.0.1 --target-port 8788
 ```
 
-This forwards only `/__dashboard` and its `/__api/requests` fetch. The raw proxy stays localhost-only. It is pure standard library and is not required for the core proxy to work.
+This forwards only `/__dashboard` and its `/__api/requests` fetch. The raw proxy stays localhost-only. It is pure standard library and is not required for the core proxy.
 
-## What this is not
+## Limitations
 
-No TLS, no auth, no multi-account support. FreeInference caps concurrency per account, and this proxy assumes one account. If you need to spread load across accounts, this is the wrong tool. If you need to gate a single account locally, this is the whole job.
+No TLS, no auth, no multi-account support. FreeInference caps concurrency per account, and this proxy assumes a single account. For spreading load across multiple accounts, use a different tool; for gating one account locally, this is the whole job.
 
 ## License
 
