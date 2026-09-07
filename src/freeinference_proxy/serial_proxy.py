@@ -202,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                     conn = _db()
                     try:
                         rows = conn.execute(
-                            "SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
+                            "SELECT id, at, ts, method, path, status, waited_s, dur_s, user_agent,"
                             " input_tokens, output_tokens"
                             " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
                     finally:
