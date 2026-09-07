@@ -1,0 +1,16 @@
+# User systemd unit for the optional dashboard bridge (Tailscale/network).
+# Only needed if you want the dashboard on a second interface (e.g. a tailnet
+# IP) without exposing the raw proxy API there. Replace the --listen-host with
+# your interface IP. Install to ~/.config/systemd/user/freeinference-dashboard-bridge.service
+[Unit]
+Description=FreeInference Dashboard bridge (dashboard-only on a second interface)
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/freeinference-dashboard-bridge --listen-host 100.x.y.z --port 8789 --target-host 127.0.0.1 --target-port 8788
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

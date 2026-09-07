@@ -1,0 +1,14 @@
+# User systemd unit for the freeinference 1-concurrent proxy.
+# Install to ~/.config/systemd/user/freeinference-serial-proxy.service
+[Unit]
+Description=FreeInference 1-concurrent serializing proxy (gate limit = 1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/freeinference-serial-proxy --data-dir %h/.local/share/freeinference-1-concurrent-proxy
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

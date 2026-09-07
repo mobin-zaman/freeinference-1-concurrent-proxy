@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FreeInference Proxy · Dashboard</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --card: #161a22;
+    --card-2: #1c212c;
+    --border: #262c39;
+    --fg: #e6e9ef;
+    --muted: #8b93a5;
+    --accent: #5b8cff;
+    --accent-2: #4a6fd1;
+    --ok: #3ecf8e;
+    --warn: #f5a623;
+    --err: #ff5d5d;
+    --quit: #9a7bff;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--bg); }
+  body {
+    font-family: var(--mono);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: 24px;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  h1 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 .accent { color: var(--accent); }
+  .live {
+    font-size: 11px; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .live .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 0 0 rgba(62, 207, 142, .5);
+    animation: pulse 2.4s var(--ease-in-out) infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(62, 207, 142, .45); }
+    70% { box-shadow: 0 0 0 8px rgba(62, 207, 142, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(62, 207, 142, 0); }
+  }
+  .endpoint {
+    font-size: 11px; color: var(--muted);
+    background: var(--card-2); border: 1px solid var(--border);
+    padding: 4px 10px; border-radius: 6px;
+  }
+
+  /* Stat cards */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+  .stat {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    transition: transform 160ms var(--ease-out), border-color 160ms ease, background 160ms ease;
+  }
+  @media (hover: hover) and (pointer: fine) { .stat:hover { border-color: var(--accent-2); } }
+  .stat:active { transform: scale(0.97); }
+  .stat .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat .value { font-size: 22px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .stat .value.ok   { color: var(--ok); }
+  .stat .value.err  { color: var(--err); }
+  .stat .value.warn { color: var(--warn); }
+  .stat .value.quit { color: var(--quit); }
+  .stat .value.acn  { color: var(--accent); }
+  .stat .sub { font-size: 10px; color: var(--muted); margin-top: 3px; }
+
+  /* Section */
+  .section { margin-bottom: 20px; }
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .section-head h2 { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
+  .refresh {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--card-2); border: 1px solid var(--border);
+    padding: 5px 12px; border-radius: 7px; cursor: pointer;
+    transition: transform 160ms var(--ease-out), color 160ms ease, border-color 160ms ease;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  @media (hover: hover) and (pointer: fine) { .refresh:hover { color: var(--fg); border-color: var(--accent-2); } }
+  .refresh:active { transform: scale(0.95); }
+  .refresh .spin {
+    width: 11px; height: 11px; border-radius: 50%;
+    border: 1.5px solid var(--muted); border-top-color: transparent;
+  }
+  .refresh.loading .spin { animation: rot .6s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  /* Table */
+  .table-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th {
+    text-align: left; font-size: 10px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: var(--card-2);
+  }
+  tbody td {
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    color: var(--fg); vertical-align: middle;
+    font-variant-numeric: tabular-nums;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background 140ms ease; }
+  @media (hover: hover) and (pointer: fine) { tbody tr:hover { background: rgba(91, 140, 255, 0.05); } }
+  td.mono { color: var(--muted); font-size: 11px; }
+  td.ua { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.path { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.path .q { color: var(--muted); }
+  .status {
+    display: inline-block; min-width: 40px; text-align: center;
+    padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600;
+  }
+  .status.s2 { color: var(--ok);   background: rgba(62, 207, 142, 0.10); }
+  .status.s4 { color: var(--warn); background: rgba(245, 166, 35, 0.10); }
+  .status.s5 { color: var(--err);  background: rgba(255, 93, 93, 0.10); }
+  .num { text-align: right; }
+  .dur { color: var(--accent); }
+  .waited .w { color: var(--quit); }
+  .waived { color: var(--muted); }
+
+  /* Empty + stagger on first paint */
+  .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
+  tbody tr { animation: rise 320ms var(--ease-out) both; }
+  tbody tr:nth-child(1) { animation-delay: 0ms; }
+  tbody tr:nth-child(2) { animation-delay: 30ms; }
+  tbody tr:nth-child(3) { animation-delay: 60ms; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  tbody.no-anim tr { animation: none; }
+
+  /* New row slides in from the top (realtime add) */
+  tbody tr.is-new {
+    animation: slideIn 260ms var(--ease-out) both;
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+  /* Flash a stat value when it changes */
+  .value.flash-acn { animation: flashCard 500ms var(--ease-out); }
+  .value.flash-err { animation: flashErr 500ms var(--ease-out); }
+  .value.flash-warn{ animation: flashWarn 500ms var(--ease-out); }
+  @keyframes flashCard { 0% { color: var(--accent); } 100% { color: inherit; } }
+  @keyframes flashErr  { 0% { color: var(--err);   } 100% { color: inherit; } }
+  @keyframes flashWarn { 0% { color: var(--warn);  } 100% { color: inherit; } }
+
+  /* Error status chip: quick attention pulse for a fresh error row */
+  tbody tr.is-new .status.s4 { animation: chipWarn 700ms var(--ease-in-out); }
+  tbody tr.is-new .status.s5 { animation: chipErr  700ms var(--ease-in-out); }
+  @keyframes chipWarn { 0% { box-shadow: 0 0 0 0 rgba(245,166,35,.55); } 100% { box-shadow: 0 0 0 6px rgba(245,166,35,0); } }
+  @keyframes chipErr  { 0% { box-shadow: 0 0 0 0 rgba(255,93,93,.55);  } 100% { box-shadow: 0 0 0 6px rgba(255,93,93,0); } }
+
+  /* ── Mobile ── */
+  @media (max-width: 640px) {
+    body { padding: 14px 12px; }
+    header { flex-wrap: wrap; gap: 10px; padding-bottom: 16px; margin-bottom: 18px; }
+    h1 { font-size: 14px; }
+    .live { order: 2; margin-left: auto; }
+    .endpoint { order: 3; width: 100%; text-align: center; }
+
+    .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
+    .stat { padding: 12px 14px; }
+    .stat .value { font-size: 20px; }
+
+    .refresh { padding: 9px 14px; font-size: 12px; } /* ≥44px touch target */
+
+    /* Table → stacked cards. thead is hidden; each row becomes a card. */
+    .table-wrap { background: transparent; border: none; overflow: visible; }
+    thead { display: none; }
+    tbody { display: block; width: 100%; }
+    tbody tr {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "path     status"
+        "method   time"
+        "dur      queued"
+        "ua       ua";
+      gap: 3px 10px;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    tbody tr td { padding: 0; border: none; text-align: left; }
+    tbody tr:last-child td { border: none; }
+    tbody tr td:nth-child(1) { grid-area: time;   font-size: 10px; }
+    tbody tr td:nth-child(2) { grid-area: method; font-size: 10px; color: var(--muted); }
+    tbody tr td:nth-child(3) { grid-area: path;   font-size: 12px; max-width: 100%; padding-left: 0; text-align: left; }
+    tbody tr td:nth-child(4) { grid-area: status; text-align: right; }
+    tbody tr td:nth-child(5) { grid-area: queued; font-size: 10px; color: var(--muted); text-align: left; }
+    tbody tr td:nth-child(6) { grid-area: dur;    font-size: 10px; color: var(--accent); text-align: right; }
+    tbody tr td:nth-child(7) { grid-area: ua;     font-size: 10px; color: var(--muted); }
+
+    /* Inline labels so hidden table headers still read on touch */
+    tbody tr td:nth-child(1)::before { content: "time"; }
+    tbody tr td:nth-child(2)::before { content: "method"; }
+    tbody tr td:nth-child(5)::before { content: "queued"; }
+    tbody tr td:nth-child(6)::before { content: "dur"; }
+    tbody tr td:nth-child(7)::before { content: "ua: "; }
+    tbody tr td::before {
+      color: var(--muted); opacity: .7; font-size: 9px;
+      text-transform: uppercase; letter-spacing: .05em; margin-right: 6px;
+    }
+
+    footer { flex-direction: column; gap: 6px; align-items: flex-start; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .live .dot { animation: none; }
+    tbody tr, tbody tr.is-new { animation: none; }
+    .value.flash-acn, .value.flash-err, .value.flash-warn, .status.s4, .status.s5 { animation: none; }
+    .stat, .refresh { transition: none; }
+  }
+
+  footer { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--border);
+           font-size: 10px; color: var(--muted); display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>FreeInference <span class="accent">Proxy</span></h1>
+    <div class="live"><span class="dot"></span><span id="live-label">127.0.0.1:8788</span></div>
+    <span class="endpoint" id="endpoint">gate limit: 1</span>
+  </header>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="label">Total requests</div><div class="value acn" id="s-total">–</div></div>
+    <div class="stat"><div class="label">Errors (≥400)</div><div class="value err" id="s-errors">–</div></div>
+    <div class="stat"><div class="label">Queue hits</div><div class="value quit" id="s-queued">–</div></div>
+    <div class="stat"><div class="label">Avg duration</div><div class="value" id="s-avgdur">–</div><div class="sub">last 50</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <h2>Recent requests</h2>
+      <button class="refresh" id="refresh"><span class="spin"></span>Refresh</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th><th>Method</th><th>Path</th>
+            <th class="num">Status</th><th class="num">Queued</th>
+            <th class="num">Duration</th><th>User-Agent</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr class="empty"><td colspan="7" style="border:none">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>
+    <span>FreeInference serializing proxy · local SQLite stats</span>
+    <span id="ts"></span>
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let firstPaint = true;
+
+function esc(s) {
+  const div = document.createElement('div');
+  div.textContent = s == null ? '' : String(s);
+  return div.innerHTML;
+}
+
+function pathCell(p) {
+  const [base, q] = p.split('?');
+  return esc(base) + (q ? '<span class="q">?' + esc(q) + '</span>' : '');
+}
+
+function statusClass(code) {
+  if (code >= 500) return 's5';
+  if (code >= 400) return 's4';
+  return 's2';
+}
+
+async function load() {
+  const btn = $('refresh');
+  btn.classList.add('loading');
+  try {
+    const res = await fetch('/__api/requests?limit=50');
+    const data = await res.json();
+    const total = data.total || 0;
+    const errors = data.errors || 0;
+    const rows = data.requests || [];
+
+    updateStats(total, errors, rows);
+    renderTable(rows, true);
+    // seed dedupe set with ids just rendered so the SSE stream doesn't duplicate them
+    seen = new Set(rows.map(r => r.id));
+    const maxId = rows.length ? Math.max(...rows.map(r => r.id)) : 0;
+    window._maxSeenId = maxId;
+    $('ts').textContent = 'connected · ' + new Date().toLocaleTimeString();
+  } finally {
+    btn.classList.remove('loading');
+  }
+}
+
+function updateStats(total, errors, rows) {
+  setFlash($('s-total'), total.toLocaleString());
+  setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : (errors > 0 ? 'flash-warn' : 'flash-acn'));
+  const queued = rows.filter(r => r.waited_s > 0).length;
+  setFlash($('s-queued'), queued + '/' + rows.length);
+  const avg = rows.length ? (rows.reduce((a, r) => a + (r.dur_s || 0), 0) / rows.length) : 0;
+  setFlash($('s-avgdur'), avg.toFixed(1) + 's');
+}
+
+// Re-trigger the flash animation on a value that changed
+function setFlash(el, text, cls) {
+  if (el.textContent === text) return;
+  el.textContent = text;
+  el.classList.remove('flash-acn', 'flash-err', 'flash-warn');
+  void el.offsetWidth; // restart animation
+  el.classList.add(cls || 'flash-acn');
+}
+
+function rowHtml(r, isNew) {
+  const min = r.waited_s > 0.001;
+  return `<tr class="${isNew ? 'is-new' : ''}">
+    <td class="mono">${esc(r.ts)}</td>
+    <td class="mono">${esc(r.method)}</td>
+    <td class="path" title="${esc(r.path)}">${pathCell(r.path)}</td>
+    <td class="num"><span class="status s${Math.floor(r.status/100)}">${r.status}</span></td>
+    <td class="num ${min ? 'waited' : 'waived'}">${min ? '<span class="w">' + r.waited_s.toFixed(2) + 's</span>' : '–'}</td>
+    <td class="num dur">${r.dur_s.toFixed(2)}s</td>
+    <td class="mono ua" title="${esc(r.user_agent)}">${esc(r.user_agent)}</td>
+  </tr>`;
+}
+
+function renderTable(rows, full) {
+  const tbody = $('rows');
+  tbody.className = full ? '' : 'no-anim';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => rowHtml(r, full)).join('');
+}
+
+// ---- Realtime: SSE pushes new request rows as they land ----
+let seen = new Set(); // ids already rendered, to dedupe
+
+function prependRow(r) {
+  if (seen.has(r.id)) return;
+  seen.add(r.id);
+  if (seen.size > 400) { // bound the set
+    const first = seen.values().next().value;
+    seen.delete(first);
+  }
+  const tbody = $('rows');
+  const empty = tbody.querySelector('.empty');
+  if (empty) tbody.innerHTML = '';
+  tbody.insertAdjacentHTML('afterbegin', rowHtml(r, true));
+  // keep at most 50 rows
+  while (tbody.rows.length > 50) tbody.deleteRow(-1);
+  // recompute queued/avg for the card labels from current rows
+  const rows = Array.from(tbody.rows).map(tr => {
+    const cells = tr.children;
+    return {
+      waited_s: parseFloat(cells[4].textContent.replace(/[^\d.]/g, '')) || 0,
+      dur_s: parseFloat(cells[5].textContent) || 0,
+    };
+  });
+  updateStats(
+    (parseInt($('s-total').textContent.replace(/[^\d]/g, '')) + 1) || 0,
+    r.status >= 400 ? (parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) + 1) || 0 : parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) || 0,
+    rows
+  );
+  $('ts').textContent = 'live · ' + new Date().toLocaleTimeString();
+}
+
+function connect(afterId) {
+  const es = new EventSource('/__api/events?after=' + (afterId || 0));
+  es.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data.kind === 'request') prependRow(data);
+    } catch (e) { /* ignore malformed */ }
+  };
+  es.onerror = () => {
+    // auto-reconnect handled by EventSource; on drop, do a full re-sync
+    es.close();
+    firstPaint = true;
+    load();
+  };
+  es.onopen = () => { $('ts').textContent = 'live · connected'; };
+}
+
+$('refresh').addEventListener('click', load);
+load().then(() => connect(window._maxSeenId));
+</script>
+</body>
+</html>

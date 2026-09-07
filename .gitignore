@@ -1,0 +1,12 @@
+# runtime data — created at first launch under --data-dir
+*.db
+*.db-journal
+*.log
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/

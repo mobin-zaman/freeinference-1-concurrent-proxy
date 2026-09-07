@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freeinference-1-concurrent-proxy"
+version = "0.1.0"
+description = "Local serializing reverse-proxy that caps FreeInference at 1 concurrent upstream request."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.scripts]
+freeinference-serial-proxy = "freeinference_proxy.serial_proxy:main"
+freeinference-dashboard-bridge = "freeinference_proxy.tailscale_bridge:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+freeinference_proxy = ["dashboard.html"]
