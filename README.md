@@ -104,6 +104,14 @@ This tool only throttles concurrency. It does not add models, routes, billing, o
 
 This project is not affiliated with or endorsed by FreeInference. See the notice at the top.
 
+## Testing
+
+```bash
+uv run pytest tests/ -q
+```
+
+The suite runs the proxy in-process against a fake upstream on ephemeral ports with an isolated data dir. It covers the serialization gate (5 parallel requests never exceed 1 upstream), queue wait recording, gate-timeout 429s, upstream 502s, streaming passthrough, the local dashboard/API endpoints, and SQLite history. No network access and no FreeInference account needed.
+
 ## License
 
 MIT.

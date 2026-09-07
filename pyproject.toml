@@ -25,3 +25,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 freeinference_proxy = ["dashboard.html"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = ["pytest>=7"]
