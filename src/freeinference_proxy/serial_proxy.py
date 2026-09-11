@@ -22,6 +22,7 @@ queued behind another (serialization working as intended).
 """
 
 import argparse
+import hmac
 import json
 import os
 import sqlite3
@@ -48,6 +49,19 @@ _HOP_BY_HOP = {
 }
 
 _gate = threading.BoundedSemaphore(GATE_LIMIT)
+
+# Authorization enforced since the proxy can be exposed beyond localhost.
+# secrets live in the environment, never in source:
+#   FIF_AUTH_KEY_MOBIN          -> the "mobin" role key (sent as Bearer)
+#   FIF_AUTH_KEY_NIRJHOR        -> the "nirjhor" role key
+#   FIF_AUTH_ADMIN_KEY          -> admin key for /__dashboard and /__api/*
+#   FREEINFERENCE_API_KEY       -> also accepted so the current Hermes provider
+#                                  (which already injects this Bearer key) keeps
+#                                  working with zero config change.
+_KEYS: "dict[str, str]" = {}       # valid LLM secret -> role label
+_ADMIN_KEYS: "frozenset[str]" = frozenset()
+_UPSTREAM_KEY: str = ""            # real freeinference credential, injected upstream
+
 _log_lock = threading.Lock()
 _db_lock = threading.Lock()
 
@@ -173,6 +187,59 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Retry-After", str(retry_after))
         self.end_headers()
         self.wfile.write(body)
+
+    def _reject_auth(self) -> None:
+        """Respond 401 without ever revealing WHICH key is valid or expected."""
+        self.send_response(401)
+        body = json.dumps({"error": {
+            "message": "missing or invalid API key",
+            "type": "local_proxy_unauthorized",
+            "code": 401,
+        }}).encode()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("WWW-Authenticate", 'Bearer realm="freeinference-proxy"')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _client_key(self) -> str:
+        """Extract the presented API key from header, lower-cased-scheme-aware.
+        Returns '' if absent. A key in the URL query string is ignored on
+        purpose: it'd leak into access logs and proxy history."""
+        authz = self.headers.get("Authorization", "")
+        if authz.lower().startswith("bearer "):
+            return authz[7:].strip()
+        x = self.headers.get("X-Api-Key", "")
+        if x:
+            return x.strip()
+        return ""
+
+    def _authenticated(self) -> bool:
+        """Constant-time check of the presented key against the LLM key set."""
+        key = self._client_key()
+        if not key:
+            return False
+        # constant-time over the whole set: compare the presented key to every
+        # stored key with hmac.compare_digest so timing doesn't leak membership.
+        auth_ok = False
+        for stored in _KEYS:
+            if hmac.compare_digest(key, stored):
+                auth_ok = True
+                break
+        return auth_ok
+
+    def _is_admin(self) -> bool:
+        key = self._client_key()
+        if not key:
+            return False
+        for stored in _ADMIN_KEYS:
+            if hmac.compare_digest(key, stored):
+                return True
+        return False
+
+    def _is_public_noise(self) -> bool:
+        return self.command == "GET" and self.path in (
+            "/favicon.ico", "/robots.txt", "/favicon.png")
 
     def _stream_events(self) -> None:
         """Server-Sent Events: pushes new request rows to the dashboard as they
@@ -302,6 +369,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _proxy(self) -> None:
         t0 = time.monotonic()
+        # --- Authorization gate (proxy may be exposed beyond localhost) ----
+        if self._is_public_noise():          # favicon/robots: harmless browser noise
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        is_admin_path = (
+            self.command == "GET"
+            and (self.path.startswith("/__dashboard")
+                 or self.path.startswith("/__api/"))
+        )
+        if is_admin_path:
+            if not self._is_admin():
+                self._reject_auth()
+                return
+        else:
+            if not self._authenticated():
+                self._reject_auth()
+                return
         if self._serve_local():
             return
         try:
@@ -314,8 +400,15 @@ class Handler(BaseHTTPRequestHandler):
         for key, value in self.headers.items():
             if key.lower() in _HOP_BY_HOP or key.lower() == "host":
                 continue
+            if key.lower() == "authorization":
+                continue  # never forward the client's proxy key; inject upstream auth
             fwd_headers[key] = value
         fwd_headers["Host"] = "freeinference.org"
+        # The proxy owns the upstream credential: it authenticates the client
+        # with a proxy-scoped key and injects the REAL upstream key here, so
+        # nobody with a mobin/nirjhor key ever sees or spoofs the upstream secret.
+        fwd_headers["Authorization"] = f"Bearer {_UPSTREAM_KEY}" if _UPSTREAM_KEY \
+            else "Bearer placeholder"
         # Preserve the client's User-Agent exactly. No spoofing or fallback.
 
         acquired = _gate.acquire(timeout=ACQUIRE_TIMEOUT)
@@ -424,6 +517,26 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     global DATA_DIR, LOG_PATH, DB_PATH
     global UPSTREAM, LISTEN_HOST, LISTEN_PORT
+    global _KEYS, _ADMIN_KEYS, _UPSTREAM_KEY
+
+    # --- Credentials from the environment (never in source / args). ---------
+    # A proxy key set is required once the proxy is reachable off-loopback.
+    mobin = os.environ.get("FIF_AUTH_KEY_MOBIN", "").strip()
+    nirjhor = os.environ.get("FIF_AUTH_KEY_NIRJHOR", "").strip()
+    admin = os.environ.get("FIF_AUTH_ADMIN_KEY", "").strip()
+    upstream_key = os.environ.get("FIF_UPSTREAM_KEY", "").strip() \
+        or os.environ.get("FREEINFERENCE_API_KEY", "").strip()
+    _keys = {}
+    if mobin:
+        _keys[mobin] = "mobin"
+    if nirjhor:
+        _keys[nirjhor] = "nirjhor"
+    if upstream_key and upstream_key not in _keys:
+        _keys[upstream_key] = "hermes"   # keeps the current Hermes provider working
+    _KEYS = _keys
+    _ADMIN_KEYS = frozenset({admin}) if admin else frozenset()
+    _UPSTREAM_KEY = upstream_key
+
     parser = argparse.ArgumentParser(
         description="Local 1-concurrent serializing reverse-proxy for FreeInference.")
     parser.add_argument("--data-dir", default=DATA_DIR_DEFAULT,

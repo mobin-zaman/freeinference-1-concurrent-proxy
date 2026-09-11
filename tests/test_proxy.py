@@ -19,6 +19,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import freeinference_proxy.serial_proxy as proxy
 
+# ---------------------------------------------------------------------------
+# Test auth keys
+# ---------------------------------------------------------------------------
+TEST_MOBIN_KEY = "test-mobin-key-0123456789"          # 32+ chars
+TEST_NIRJHOR_KEY = "test-nirjhor-key-9876543210"
+TEST_WRONG_KEY = "test-wrong-key-0000"
+TEST_ADMIN_KEY = "test-admin-key-000000000000"
+
+
+def auth(name=TEST_MOBIN_KEY):
+    return {"Authorization": f"Bearer {name}"}
+
 
 # ---------------------------------------------------------------------------
 # Fake upstream
@@ -141,11 +153,19 @@ def upstream():
 
 @pytest.fixture()
 def proxy_server(monkeypatch, tmp_path, upstream):
-    """A real proxy pointed at the fake upstream, with isolated data dir."""
+    """A real proxy pointed at the fake upstream, with isolated data dir
+    and a deterministic auth key set injected via env."""
     monkeypatch.setattr(proxy, "UPSTREAM", f"http://127.0.0.1:{upstream.port}")
     monkeypatch.setattr(proxy, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(proxy, "DB_PATH", str(tmp_path / "requests.db"))
     monkeypatch.setattr(proxy, "LOG_PATH", str(tmp_path / "proxy.log"))
+    monkeypatch.setattr(
+        proxy, "_KEYS",
+        {TEST_MOBIN_KEY: "mobin", TEST_NIRJHOR_KEY: "nirjhor",
+         "local-hermes-upstream-key": "hermes"},
+    )
+    monkeypatch.setattr(proxy, "_ADMIN_KEYS", frozenset({TEST_ADMIN_KEY}))
+    monkeypatch.setattr(proxy, "_UPSTREAM_KEY", "local-hermes-upstream-key")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), proxy.Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -189,11 +209,11 @@ def wait_for_rows(path, n, timeout=3.0):
 # ---------------------------------------------------------------------------
 def test_local_endpoints_never_reach_upstream(proxy_server, upstream):
     base = proxy_server["base"]
-    r = requests.get(f"{base}/__dashboard")
+    r = requests.get(f"{base}/__dashboard", headers=auth(TEST_ADMIN_KEY))
     assert r.status_code == 200
     assert r.headers["Content-Type"].startswith("text/html")
 
-    r = requests.get(f"{base}/__api/requests?limit=5")
+    r = requests.get(f"{base}/__api/requests?limit=5", headers=auth(TEST_ADMIN_KEY))
     assert r.status_code == 200
     body = r.json()
     assert body["requests"] == []
@@ -219,7 +239,11 @@ def test_events_endpoint_is_streaming(proxy_server):
     port = int(base.rsplit(":", 1)[1])
     s = _socket.create_connection((host, port), timeout=5)
     try:
-        s.sendall(b"GET /__api/events HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+        s.sendall(
+            f"GET /__api/events HTTP/1.1\r\nHost: test\r\n"
+            f"Authorization: Bearer {TEST_ADMIN_KEY}\r\n"
+            f"Connection: close\r\n\r\n".encode()
+        )
         buf = b""
         deadline = time.monotonic() + 3
         while b"retry:" not in buf and time.monotonic() < deadline:
@@ -242,7 +266,7 @@ def test_events_endpoint_is_streaming(proxy_server):
 def test_forwards_request_verbatim(proxy_server, upstream):
     base = proxy_server["base"]
     marker = "custom-ua"
-    r = requests.get(f"{base}/v1/models", headers={"X-Marker": marker, "User-Agent": marker}, timeout=30)
+    r = requests.get(f"{base}/v1/models", headers=auth() | {"X-Marker": marker, "User-Agent": marker}, timeout=30)
     assert r.status_code == 200
     assert r.json() == {"ok": True, "path": "/v1/models"}
     assert r.headers["X-Upstream-Saw"] == marker
@@ -257,7 +281,7 @@ def test_forwards_request_verbatim(proxy_server, upstream):
 def test_post_body_and_json_forwarded(proxy_server, upstream):
     base = proxy_server["base"]
     body = {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]}
-    r = requests.post(f"{base}/v1/chat/completions", json=body, timeout=30)
+    r = requests.post(f"{base}/v1/chat/completions", json=body, headers=auth(), timeout=30)
     assert r.status_code == 200
     recv = upstream.state.received[0]
     assert recv["method"] == "POST"
@@ -266,7 +290,7 @@ def test_post_body_and_json_forwarded(proxy_server, upstream):
 
 def test_streaming_response_forwarded(proxy_server, upstream):
     base = proxy_server["base"]
-    r = requests.get(f"{base}/stream", headers={"X-Want-SSE": "1"}, timeout=30)
+    r = requests.get(f"{base}/stream", headers=auth() | {"X-Want-SSE": "1"}, timeout=30)
     assert r.status_code == 200
     assert "text/event-stream" in r.headers["Content-Type"]
     assert email_body(r) == b"data: first\n\ndata: second\n\n"
@@ -280,19 +304,23 @@ def email_body(response):
 
 
 def test_serialization_gate_caps_concurrency_at_one(proxy_server, upstream):
-    """"The core guarantee: N parallel clients still only ever run 1 upstream request at a time."""
+    """The core guarantee: N parallel clients still only ever run 1 upstream request at a time —
+    a HARD invariant under contention, not best-effort."""
     base = proxy_server["base"]
-    upstream.state.hold_s = 0.2
+    upstream.state.hold_s = 0.03
     upstream.state.hold_event.set()  # let all requests through to the gate
 
-    # fire 5 parallel requests
-    with requests.get(f"{base}/a", timeout=30), requests.get(f"{base}/b", timeout=30), \
-         requests.get(f"{base}/c", timeout=30), requests.get(f"{base}/d", timeout=30), \
-         requests.get(f"{base}/e", timeout=30):
-        pass
+    # fire 20 parallel requests down overlapping sockets to maximise race pressure
+    urls = [f"{base}/req-{i}" for i in range(20)]
+    threads = [threading.Thread(target=lambda u=u: requests.get(u, headers=auth(), timeout=30))
+               for u in urls]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
 
-    assert len(upstream.state.received) == 5
-    assert upstream.state.max_active == 1  # never more than one at a time
+    assert len(upstream.state.received) == 20
+    assert upstream.state.max_active == 1  # never more than one at a time, ever
 
 
 def test_queue_wait_is_recorded(proxy_server, upstream):
@@ -303,7 +331,7 @@ def test_queue_wait_is_recorded(proxy_server, upstream):
 
     results = []
     def fire(url):
-        results.append(requests.get(f"{base}{url}", timeout=30).status_code)
+        results.append(requests.get(f"{base}{url}", headers=auth(), timeout=30).status_code)
     threads = [threading.Thread(target=fire, args=(u,)) for u in ("/a", "/b", "/c")]
     for t in threads:
         t.start()
@@ -324,10 +352,10 @@ def test_gate_timeout_returns_429(monkeypatch, proxy_server, upstream):
     upstream.state.hold_event.set()
 
     # First request grabs the gate for ~3s; second times out after ACQUIRE_TIMEOUT (1s).
-    first = threading.Thread(target=lambda: requests.get(f"{base}/first", timeout=30))
+    first = threading.Thread(target=lambda: requests.get(f"{base}/first", headers=auth(), timeout=30))
     first.start()
     time.sleep(0.3)  # let the first request acquire the gate
-    r2 = requests.get(f"{base}/second", timeout=15)
+    r2 = requests.get(f"{base}/second", headers=auth(), timeout=15)
     first.join()
 
     assert r2.status_code == 429
@@ -343,7 +371,7 @@ def test_upstream_failure_returns_502(monkeypatch, proxy_server, upstream):
     # Point the proxy at a dead port; connection refused raises requests.RequestException.
     monkeypatch.setattr(proxy, "UPSTREAM", "http://127.0.0.1:1")
     upstream.state.hold_event.set()
-    r = requests.get(f"{base}/boom", timeout=30)
+    r = requests.get(f"{base}/boom", headers=auth(), timeout=30)
     assert r.status_code == 502
     assert "local_proxy_upstream_error" in r.text
     # the failure is recorded in history, not sent upstream (nothing to send to)
@@ -354,7 +382,7 @@ def test_upstream_failure_returns_502(monkeypatch, proxy_server, upstream):
 def test_history_row_recorded(proxy_server, upstream):
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/models", headers={"User-Agent": "test-suite/1.0"}, timeout=30)
+    requests.get(f"{base}/v1/models", headers=auth() | {"User-Agent": "test-suite/1.0"}, timeout=30)
     rows = wait_for_rows(proxy_server["db"], 1)
     assert rows[0]["method"] == "GET"
     assert rows[0]["path"] == "/v1/models"
@@ -367,7 +395,7 @@ def test_tokens_recorded_from_buffered_response(proxy_server, upstream):
     """Non-streaming chat completions: usage.prompt_tokens/completion_tokens are stored."""
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/chat/completions", headers={"X-Want-Usage": "1"}, timeout=30)
+    requests.get(f"{base}/v1/chat/completions", headers=auth() | {"X-Want-Usage": "1"}, timeout=30)
     rows = wait_for_rows(proxy_server["db"], 1)
     assert rows[0]["input_tokens"] == 11
     assert rows[0]["output_tokens"] == 22
@@ -378,7 +406,7 @@ def test_tokens_recorded_from_streaming_response(proxy_server, upstream):
     base = proxy_server["base"]
     upstream.state.hold_event.set()
     requests.get(f"{base}/v1/chat/completions",
-                 headers={"X-Want-SSE": "1", "X-Want-Usage": "1"}, timeout=30)
+                 headers=auth() | {"X-Want-SSE": "1", "X-Want-Usage": "1"}, timeout=30)
     rows = wait_for_rows(proxy_server["db"], 1)
     assert rows[0]["input_tokens"] == 3
     assert rows[0]["output_tokens"] == 9
@@ -387,7 +415,7 @@ def test_tokens_recorded_from_streaming_response(proxy_server, upstream):
 def test_no_usage_means_zero_tokens(proxy_server, upstream):
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/models", timeout=30)
+    requests.get(f"{base}/v1/models", headers=auth(), timeout=30)
     rows = wait_for_rows(proxy_server["db"], 1)
     assert rows[0]["input_tokens"] == 0
     assert rows[0]["output_tokens"] == 0
@@ -399,12 +427,12 @@ def test_api_range_filter(proxy_server, upstream):
     upstream.state.hold_event.set()
     # three requests, all happening "now"
     for _ in range(3):
-        requests.get(f"{base}/v1/models", headers={"X-Want-Usage": "1"}, timeout=30)
+        requests.get(f"{base}/v1/models", headers=auth() | {"X-Want-Usage": "1"}, timeout=30)
     wait_for_rows(proxy_server["db"], 3)  # all rows committed before querying the API
 
-    r_today = requests.get(f"{base}/__api/requests?range=today&limit=50", timeout=5).json()
-    r_all = requests.get(f"{base}/__api/requests?range=all&limit=50", timeout=5).json()
-    r_7d = requests.get(f"{base}/__api/requests?range=7d&limit=50", timeout=5).json()
+    r_today = requests.get(f"{base}/__api/requests?range=today&limit=50", headers=auth(TEST_ADMIN_KEY), timeout=5).json()
+    r_all = requests.get(f"{base}/__api/requests?range=all&limit=50", headers=auth(TEST_ADMIN_KEY), timeout=5).json()
+    r_7d = requests.get(f"{base}/__api/requests?range=7d&limit=50", headers=auth(TEST_ADMIN_KEY), timeout=5).json()
 
     # all three in the window (fresh DB, all at now)
     assert r_today["total"] == 3
@@ -423,8 +451,119 @@ def test_api_range_filter(proxy_server, upstream):
 def test_api_range_invalid_defaults_to_all(proxy_server, upstream):
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/models", headers={"X-Want-Usage": "1"}, timeout=30)
+    requests.get(f"{base}/v1/models", headers=auth() | {"X-Want-Usage": "1"}, timeout=30)
     wait_for_rows(proxy_server["db"], 1)
-    r = requests.get(f"{base}/__api/requests?range=bogus", timeout=5).json()
+    r = requests.get(f"{base}/__api/requests?range=bogus", headers=auth(TEST_ADMIN_KEY), timeout=5).json()
     assert r["total"] == 1
     assert r["input_tokens"] == 11
+
+
+# ---------------------------------------------------------------------------
+# API-key authentication
+# ---------------------------------------------------------------------------
+def test_proxy_requires_api_key(proxy_server, upstream):
+    """A proxied request with no Authorization header is rejected 401."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(f"{base}/v1/models", timeout=10)
+    assert r.status_code == 401
+    assert "error" in r.json()
+    # nothing reached upstream
+    assert upstream.state.received == []
+
+
+def test_proxy_rejects_wrong_api_key(proxy_server, upstream):
+    """A proxied request with an invalid key is rejected 401."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(f"{base}/v1/models", headers=auth(TEST_WRONG_KEY), timeout=10)
+    assert r.status_code == 401
+    assert upstream.state.received == []
+
+
+def test_proxy_rejects_bare_key_in_query(proxy_server, upstream):
+    """The key must come in a header, not the URL query string (no leakage into logs)."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(f"{base}/v1/models", params={"api_key": TEST_MOBIN_KEY}, timeout=10)
+    assert r.status_code == 401
+    assert upstream.state.received == []
+
+
+@pytest.mark.parametrize("key", [TEST_MOBIN_KEY, TEST_NIRJHOR_KEY])
+def test_proxy_accepts_valid_keys(proxy_server, upstream, key):
+    """Both role keys authenticate a proxied LLM request."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(f"{base}/v1/models", headers=auth(key), timeout=10)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "path": "/v1/models"}
+
+
+def test_proxy_accepts_x_api_key_header(proxy_server, upstream):
+    """`X-Api-Key` header works as an alternative to Bearer Authorization."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(f"{base}/v1/models", headers={"X-Api-Key": TEST_MOBIN_KEY}, timeout=10)
+    assert r.status_code == 200
+
+
+def test_proxy_accepts_local_hermes_upstream_key(proxy_server, upstream):
+    """The key Hermes already injects (FREEINFERENCE_API_KEY) keeps the
+    existing provider working with zero config change."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(f"{base}/v1/models", headers=auth("local-hermes-upstream-key"), timeout=10)
+    assert r.status_code == 200
+
+
+def test_proxy_normalizes_bearer_case(proxy_server, upstream):
+    """`bearer` (lowercase scheme) must authenticate too — clients differ."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.get(
+        f"{base}/v1/models",
+        headers={"Authorization": f"bearer {TEST_MOBIN_KEY}"}, timeout=10)
+    assert r.status_code == 200
+
+
+def test_proxy_does_not_forward_local_api_key_upstream(proxy_server, upstream):
+    """The client's proxy key must never leak upstream; the proxy instead
+    injects the REAL upstream credential (FIF_UPSTREAM_KEY)."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", headers=auth(TEST_MOBIN_KEY), timeout=10)
+    recv = upstream.state.received[0]
+    authz = recv["headers"].get("Authorization", "")
+    # the upstream saw the injected upstream credential, never the client's key
+    assert authz == "Bearer local-hermes-upstream-key"
+    assert TEST_MOBIN_KEY not in authz
+
+
+def test_admin_endpoints_require_admin_key(proxy_server, upstream):
+    """Dashboard and stats API reject a valid LLM key; they need the admin key."""
+    base = proxy_server["base"]
+    for path in ("/__dashboard", "/__api/requests?limit=5", "/__api/events"):
+        r = requests.get(f"{base}{path}", headers=auth(TEST_MOBIN_KEY), timeout=10)
+        assert r.status_code == 401, f"{path} should reject a non-admin key"
+    # the admin key works (dashboard + requests already asserted elsewhere)
+    r = requests.get(f"{base}/__dashboard", headers=auth(TEST_ADMIN_KEY), timeout=10)
+    assert r.status_code == 200
+
+
+def test_favicon_noise_stays_public(proxy_server, upstream):
+    """favicon.ico is served without auth (browser tab noise), never hits upstream."""
+    base = proxy_server["base"]
+    r = requests.get(f"{base}/favicon.ico", timeout=10)
+    assert r.status_code == 204
+    assert upstream.state.received == []
+
+
+def test_user_agent_is_never_spoofed(proxy_server, upstream):
+    """The client's REAL User-Agent always reaches upstream verbatim."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    real_ua = "MyClient/1.2.3 (real-ua)"
+    requests.get(f"{base}/v1/models", headers=auth() | {"User-Agent": real_ua}, timeout=10)
+    recv = upstream.state.received[0]
+    assert recv["headers"]["User-Agent"] == real_ua

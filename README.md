@@ -19,7 +19,9 @@ A local reverse proxy that caps FreeInference at one in-flight upstream request 
 - **Real-time dashboard.** A single self-contained HTML page shows request activity over Server-Sent Events (no polling, no client build step), with input/output token counts, Today/7 days/All-time filtering, and a light/dark theme toggle.
 - **Token usage captured.** For chat completions, `usage.prompt_tokens` and `usage.completion_tokens` are read from the upstream response (streaming and non-streaming) and stored per request.
 - **Queue metrics.** The dashboard shows queue hits and average queue time, so you can see how often and how long requests waited behind the gate.
-- **Local only by default.** Binds `127.0.0.1`; no auth or TLS because nothing is exposed to the network. An optional bridge exposes just the dashboard on another interface.
+- **API-key authentication.** Since the proxy may be exposed beyond localhost, every proxied request requires a valid bearer key from the environment (`FIF_AUTH_KEY_MOBIN`, `FIF_AUTH_KEY_NIRJHOR`), verified in constant time. The dashboard and stats API require a separate admin key (`FIF_AUTH_ADMIN_KEY`). The proxy injects the real upstream credential (`FIF_UPSTREAM_KEY` or `FREEINFERENCE_API_KEY`) itself, so no caller ever sees it.
+- **Hard 1-concurrent gate.** A global semaphore holds upstream concurrency at exactly 1 — a hard invariant under any amount of contention, verified under a 20-way parallel stress test.
+- **Real User-Agent passthrough.** The client's User-Agent is forwarded verbatim; it is never overwritten or spoofed.
 - **Honest queues.** Every request is written to SQLite with its queue-wait and duration, so you can see what waited and why.
 
 ## Why you'd use it
@@ -105,11 +107,29 @@ freeinference-dashboard-bridge --listen-host <your.ip> --port 8789 \
 
 This forwards only `/__dashboard` and its `/__api/requests` fetch. The raw proxy stays localhost-only. It is pure standard library and is not required for the core proxy.
 
+## Authentication (deploy-time)
+
+Once the proxy is reachable beyond loopback (via the bridge, a tunnel, etc.) it **requires API-key auth** — there is no open mode off-localhost. Keys come from the environment, never the repo or CLI.
+
+```bash
+export FIF_AUTH_KEY_MOBIN='<mobin bearer key>'
+export FIF_AUTH_KEY_NIRJHOR='<nirjhor bearer key>'
+export FIF_AUTH_ADMIN_KEY='<admin key for dashboard & /__api>'
+export FIF_UPSTREAM_KEY='<real freeinference.org key>'
+freeinference-serial-proxy
+```
+
+- Any HOLD of `FIF_AUTH_KEY_MOBIN` / `FIF_AUTH_KEY_NIRJHOR` proxies LLM requests (the key's role is just a label for you).
+- If `FIF_UPSTREAM_KEY` is unset the proxy falls back to `FREEINFERENCE_API_KEY`, so an existing Hermes provider (which already injects that key) keeps working with no config change.
+- The proxy injects `Authorization: Bearer $FIF_UPSTREAM_KEY` upstream itself and never forwards a client's key, so a mobin/nirjhor holder never learns or spoofs the upstream credential.
+- `/__dashboard` and `/__api/*` require `FIF_AUTH_ADMIN_KEY`, not an LLM key.
+- Client `Authorization` (the proxy key) is never leaked upstream; the client's `User-Agent` is always forwarded verbatim, never spoofed.
+
 ## Limitations
 
-No TLS and no authentication: by default it binds `127.0.0.1`, so it is only reachable on the machine it runs on and nothing is exposed to the network. If you expose it beyond localhost via the bridge, add your own auth or firewall rules.
-
 This tool only throttles concurrency. It does not add models, routes, billing, or anything else on top of FreeInference; you still need a working FreeInference account and API key.
+
+Terminate TLS at a proxy in front (the proxy is stateless HTTP; it is intended to sit behind Cloudflare, a reverse proxy, or a tunnel that owns TLS). 
 
 This project is not affiliated with or endorsed by FreeInference. See the notice at the top.
 
@@ -119,7 +139,7 @@ This project is not affiliated with or endorsed by FreeInference. See the notice
 uv run pytest tests/ -q
 ```
 
-The suite runs the proxy in-process against a fake upstream on ephemeral ports with an isolated data dir. It covers the serialization gate (5 parallel requests never exceed 1 upstream), queue wait recording, gate-timeout 429s, upstream 502s, streaming passthrough, the local dashboard/API endpoints, and SQLite history. No network access and no FreeInference account needed.
+The suite runs the proxy in-process against a fake upstream on ephemeral ports with an isolated data dir. It covers the serialization gate (20 parallel requests never exceed 1 upstream), queue wait recording, gate-timeout 429s, upstream 502s, streaming passthrough, the local dashboard/API endpoints, SQLite history, and API-key auth (401 on missing/wrong key, per-role acceptance, admin-vs-LLM key separation, no key leakage upstream, and verbatim User-Agent pass-through). No network access and no FreeInference account needed.
 
 ## License
 
