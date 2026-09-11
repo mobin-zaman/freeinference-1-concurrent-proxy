@@ -210,6 +210,12 @@
   @media (hover: hover) and (pointer: fine) { tbody tr:hover { background: rgba(91, 140, 255, 0.05); } }
   td.mono { color: var(--muted); font-size: 11px; }
   td.ua { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.keyc { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .key-chip {
+    display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 10px;
+    background: rgba(91, 140, 255, 0.12); color: var(--accent);
+  }
+  .key-none { color: var(--muted); opacity: .6; }
   td.path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.path .q { color: var(--muted); }
   .status {
@@ -228,6 +234,71 @@
 
   /* Empty + stagger on first paint */
   .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
+
+  /* API Keys management section */
+  .keys-grid { display: grid; gap: 10px; }
+  .key-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--border-soft); border-radius: 12px;
+    padding: 12px 14px; box-shadow: var(--shadow);
+  }
+  .key-row .k-name { font-weight: 600; min-width: 96px; }
+  .key-row .k-mask { color: var(--muted); font-size: 11px; flex: 1; min-width: 120px; }
+  .key-row .k-role {
+    font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--quit);
+    border: 1px solid var(--border-soft); border-radius: 5px; padding: 2px 6px;
+  }
+  .key-row .k-role.admin { color: var(--warn); border-color: var(--border-soft); }
+  .key-row .k-on {
+    font-size: 10px; display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 999px; background: rgba(62,207,142,0.12); color: var(--ok);
+  }
+  .key-row .k-off-disabled {
+    font-size: 10px; display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 999px; background: rgba(255,93,93,0.10); color: var(--err);
+  }
+  .toggle {
+    cursor: pointer; font-family: var(--mono); font-size: 10px;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
+    color: var(--muted); background: var(--card-2);
+    transition: transform 150ms var(--ease-out), color 150ms ease, border-color 150ms ease;
+  }
+  @media (hover: hover) and (pointer: fine) { .toggle:hover { color: var(--fg); border-color: var(--accent-2); } }
+  .toggle:active { transform: scale(0.94); }
+  .toggle.danger:hover { color: var(--err); border-color: var(--err); }
+  .toggle.success:hover { color: var(--ok); border-color: var(--ok); }
+  .key-create {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px;
+    background: var(--card-2); border: 1px dashed var(--border); border-radius: 12px; padding: 12px 14px;
+  }
+  .key-create input, .key-create select {
+    font-family: var(--mono); font-size: 12px; color: var(--fg);
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; height: 34px;
+  }
+  .key-create input { flex: 1; min-width: 140px; }
+  .key-create button {
+    font-family: var(--mono); font-size: 11px; color: var(--fg); cursor: pointer;
+    background: var(--accent-2); border: 1px solid transparent; border-radius: 8px;
+    padding: 7px 14px; height: 34px; font-weight: 600;
+    transition: transform 150ms var(--ease-out), opacity 150ms ease;
+  }
+  .key-create button:hover { opacity: .9; }
+  .key-create button:active { transform: scale(0.95); }
+  .key-reveal {
+    position: relative; margin-top: 10px;
+    background: var(--card); border: 1px solid var(--ok); border-radius: 10px; padding: 12px 14px;
+    font-size: 11px; color: var(--fg);
+  }
+  .key-reveal .kr-label { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--ok); margin-bottom: 6px; }
+  .key-reveal code {
+    display: block; word-break: break-all; font-size: 12px; color: var(--fg);
+    background: var(--card-2); border-radius: 6px; padding: 8px 10px; margin-top: 6px;
+  }
+  .key-reveal .kr-copy { cursor: pointer; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 10px; margin-top: 8px; background: var(--card-2); }
+  .key-reveal .kr-note { color: var(--warn); margin-top: 6px; font-size: 10px; }
+  .key-reveal .kr-close { cursor: pointer; color: var(--err); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 10px; margin-top: 8px; background: var(--card-2); }
+  .key-err { color: var(--err); font-size: 11px; margin-top: 8px; }
   tbody tr { animation: rise 320ms var(--ease-out) both; }
   tbody tr:nth-child(1) { animation-delay: 0ms; }
   tbody tr:nth-child(2) { animation-delay: 30ms; }
@@ -285,6 +356,7 @@
         "method   time"
         "tokens   queued"
         "dur      dur"
+        "key      key"
         "ua       ua";
       gap: 4px 10px;
       align-items: center;
@@ -304,7 +376,9 @@
     tbody tr td:nth-child(5) { grid-area: queued; font-size: 10px; }
     tbody tr td:nth-child(6) { grid-area: dur;    font-size: 10px; }
     tbody tr td:nth-child(7) { grid-area: tokens; font-size: 10px; color: var(--quit); }
-    tbody tr td:nth-child(8) { grid-area: ua;     font-size: 10px; color: var(--muted); }
+    tbody tr td:nth-child(8) { grid-area: tokens; font-size: 10px; color: var(--quit); padding-left: 12px; }
+    tbody tr td:nth-child(9) { grid-area: key; font-size: 10px; color: var(--accent); }
+    tbody tr td:nth-child(10) { grid-area: ua;  font-size: 10px; color: var(--muted); }
 
     /* Inline labels so hidden table headers still read on touch */
     tbody tr td:nth-child(1)::before { content: "time"; }
@@ -312,7 +386,9 @@
     tbody tr td:nth-child(5)::before { content: "queued"; }
     tbody tr td:nth-child(6)::before { content: "dur"; }
     tbody tr td:nth-child(7)::before { content: "tokens"; }
-    tbody tr td:nth-child(8)::before { content: "ua: "; }
+    tbody tr td:nth-child(8)::before { content: "out"; }
+    tbody tr td:nth-child(9)::before { content: "key: "; }
+    tbody tr td:nth-child(10)::before { content: "ua: "; }
     tbody tr td::before {
       color: var(--muted); opacity: .7; font-size: 9px;
       text-transform: uppercase; letter-spacing: .05em; margin-right: 6px;
@@ -369,6 +445,24 @@
 
   <div class="section">
     <div class="section-head">
+      <h2>API keys</h2>
+      <div class="chips"><span class="chip" id="k-count">0</span></div>
+    </div>
+    <div class="keys-grid" id="keys-grid"><div class="empty">Loading keys…</div></div>
+    <div class="key-create">
+      <input id="key-name" type="text" placeholder="key name (e.g. ci-bot)" autocomplete="off" spellcheck="false">
+      <select id="key-role" title="role">
+        <option value="llm">LLM</option>
+        <option value="admin">admin</option>
+      </select>
+      <button id="key-create-btn" title="Create a new key">Create key</button>
+    </div>
+    <div id="key-reveal-wrap"></div>
+    <div class="key-err" id="key-err" style="display:none"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
       <h2>Recent requests</h2>
       <div class="chips">
         <span class="chip">in: <b id="c-intok">0</b></span>
@@ -381,10 +475,10 @@
           <tr>
             <th>Time</th><th>Method</th><th>Path</th>
             <th class="num">Status</th><th class="num">Queued</th>
-            <th class="num">Dur</th><th class="num">In</th><th class="num">Out</th><th>User-Agent</th>
+            <th class="num">Dur</th><th class="num">In</th><th class="num">Out</th><th>Key</th><th>User-Agent</th>
           </tr>
         </thead>
-        <tbody id="rows"><tr class="empty"><td colspan="9" style="border:none">Loading…</td></tr></tbody>
+        <tbody id="rows"><tr class="empty"><td colspan="10" style="border:none">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -477,6 +571,7 @@ async function load() {
     const maxId = rows.length ? Math.max(...rows.map(r => r.id)) : 0;
     window._maxSeenId = maxId;
     $('ts').textContent = 'connected · ' + new Date().toLocaleTimeString();
+    loadKeys();
   } finally {
     btn.classList.remove('loading');
   }
@@ -513,6 +608,7 @@ function rowHtml(r, isNew) {
   const min = r.waited_s > 0.001;
   const it = r.input_tokens || 0, ot = r.output_tokens || 0;
   const tokCls = (it || ot) ? '' : ' zero';
+  const key = r.key_name && r.key_name !== 'admin' ? '<span class="key-chip">' + esc(r.key_name) + '</span>' : (r.key_name ? esc(r.key_name) : '<span class="key-none">–</span>');
   return `<tr class="${isNew ? 'is-new' : ''}">
     <td class="mono">${esc(r.ts)}</td>
     <td class="mono">${esc(r.method)}</td>
@@ -522,6 +618,7 @@ function rowHtml(r, isNew) {
     <td class="num dur">${r.dur_s.toFixed(2)}s</td>
     <td class="num tok${tokCls}">${it ? fmtTok(it) : '–'}</td>
     <td class="num tok${tokCls}">${ot ? fmtTok(ot) : '–'}</td>
+    <td class="mono keyc" title="${esc(r.key_name || '')}">${key}</td>
     <td class="mono ua" title="${esc(r.user_agent)}">${esc(r.user_agent)}</td>
   </tr>`;
 }
@@ -530,7 +627,7 @@ function renderTable(rows, full) {
   const tbody = $('rows');
   tbody.className = full ? '' : 'no-anim';
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => rowHtml(r, full)).join('');
@@ -584,6 +681,128 @@ function connect(afterId) {
 }
 
 $('refresh').addEventListener('click', load);
+
+// ---- API key management ----
+let keysLoaded = false;
+async function loadKeys() {
+  const grid = $('keys-grid');
+  try {
+    const res = await fetch('/__api/keys');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const keys = data.keys || [];
+    $('k-count').textContent = keys.length + (keys.length === 1 ? ' key' : ' keys');
+    if (!keys.length) {
+      grid.innerHTML = '<div class="empty">No API keys yet. Create one below.</div>';
+    } else {
+      grid.innerHTML = keys.map(renderKey).join('');
+      grid.querySelectorAll('.toggle').forEach((b) =>
+        b.addEventListener('click', () => toggleKey(b.dataset.id, b.dataset.enabled === '1')));
+    }
+    keysLoaded = true;
+  } catch (e) {
+    grid.innerHTML = '<div class="empty">Could not load keys (' + esc(e.message) + ') — the admin key may be missing on this client.</div>';
+  }
+}
+
+function fmtWhen(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderKey(k) {
+  const en = !!k.enabled;
+  const toggleCls = en ? 'danger' : 'success';
+  const toggleLabel = en ? 'Disable' : 'Enable';
+  const role = k.role === 'admin' ? '<span class="k-role admin">admin</span>' : '<span class="k-role">llm</span>';
+  const state = en ? '<span class="k-on">● enabled</span>' : '<span class="k-off-disabled">● disabled</span>';
+  return `<div class="key-row" data-id="${k.id}">
+    <span class="k-name" title="${esc(k.name)}">${esc(k.name)}</span>
+    <span class="k-mask" title="${esc(k.masked)}">${esc(k.masked)}</span>
+    ${role}
+    ${state}
+    <span class="k-meta" style="font-size:10px;color:var(--muted)">last used ${fmtWhen(k.last_used_at)}</span>
+    <button class="toggle ${toggleCls}" data-id="${k.id}" data-enabled="${en ? 1 : 0}">${toggleLabel}</button>
+  </div>`;
+}
+
+function toggleKey(id, isEnabled) {
+  const enabled = !isEnabled;
+  const btn = document.querySelector(`.toggle[data-id="${id}"]`);
+  const row = document.querySelector(`.key-row[data-id="${id}"]`);
+  if (btn) btn.disabled = true;
+  fetch('/__api/keys/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      setKeyErr('');
+      await loadKeys();
+    })
+    .catch((e) => {
+      setKeyErr('Failed to ' + (enabled ? 'enable' : 'disable') + ': ' + e.message);
+      if (btn) btn.disabled = false;
+    });
+}
+
+function showReveal(name, key) {
+  const wrap = $('key-reveal-wrap');
+  wrap.innerHTML = `<div class="key-reveal">
+    <div class="kr-label">Key created — copy it now. It is shown only once.</div>
+    <div><b>${esc(name)}</b></div>
+    <code>${esc(key)}</code>
+    <button class="kr-copy" id="kr-copy">📋 Copy</button>
+    <button class="kr-close" id="kr-close">Dismiss</button>
+    <div class="kr-note">Store this somewhere safe. The proxy only stores a one-way hash and never shows the full key again.</div>
+  </div>`;
+  $('kr-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(key); $('kr-copy').textContent = 'Copied!'; }
+    catch (e) { $('kr-copy').textContent = 'Press Ctrl-C to copy'; }
+  });
+  $('kr-close').addEventListener('click', () => wrap.innerHTML = '');
+}
+
+function setKeyErr(msg) {
+  const el = $('key-err');
+  el.style.display = msg ? 'block' : 'none';
+  el.textContent = msg;
+}
+
+$('key-create-btn').addEventListener('click', async () => {
+  const name = $('key-name').value.trim();
+  const role = $('key-role').value;
+  if (!name) { setKeyErr('Name is required.'); return; }
+  const btn = $('key-create-btn');
+  btn.disabled = true;
+  setKeyErr('');
+  try {
+    const res = await fetch('/__api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, role }),
+    });
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try { const d = await res.json(); msg = (d.error && d.error.message) || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    const created = await res.json();
+    $('key-name').value = '';
+    showReveal(created.name, created.key);
+    loadKeys();
+  } catch (e) {
+    setKeyErr('Create failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+$('key-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('key-create-btn').click(); });
+
+loadKeys();
+
 setRange('all');
 </script>
 </body>

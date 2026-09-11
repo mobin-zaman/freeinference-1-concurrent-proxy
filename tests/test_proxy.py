@@ -159,13 +159,25 @@ def proxy_server(monkeypatch, tmp_path, upstream):
     monkeypatch.setattr(proxy, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(proxy, "DB_PATH", str(tmp_path / "requests.db"))
     monkeypatch.setattr(proxy, "LOG_PATH", str(tmp_path / "proxy.log"))
-    monkeypatch.setattr(
-        proxy, "_KEYS",
-        {TEST_MOBIN_KEY: "mobin", TEST_NIRJHOR_KEY: "nirjhor",
-         "local-hermes-upstream-key": "hermes"},
-    )
-    monkeypatch.setattr(proxy, "_ADMIN_KEYS", frozenset({TEST_ADMIN_KEY}))
     monkeypatch.setattr(proxy, "_UPSTREAM_KEY", "local-hermes-upstream-key")
+    monkeypatch.setattr(proxy, "_ENV_ADMIN_KEYS", (TEST_ADMIN_KEY,))
+    # Seed the DB with the test LLM keys (matching how main() seeds env keys)
+    # so _refresh_key_cache() restores them after any create/enable/disable.
+    with proxy._db_lock:
+        conn = proxy._db()
+        try:
+            for raw, name in ((TEST_MOBIN_KEY, "mobin"), (TEST_NIRJHOR_KEY, "nirjhor")):
+                try:
+                    conn.execute(
+                        "INSERT INTO api_keys (name, key_hash, role, enabled, created_at)"
+                        " VALUES (?,?,'llm',1,?)",
+                        (name, proxy._hash_key(raw), time.time()))
+                except sqlite3.IntegrityError:
+                    pass
+            conn.commit()
+        finally:
+            conn.close()
+    proxy._refresh_key_cache()
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), proxy.Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -181,7 +193,7 @@ def db_rows(path, limit=100):
     try:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
-            "SELECT method, path, status, waited_s, dur_s, user_agent,"
+            "SELECT method, path, status, waited_s, dur_s, user_agent, key_name,"
             " input_tokens, output_tokens"
             " FROM requests ORDER BY id LIMIT ?", (limit,)).fetchall()]
     finally:
@@ -567,3 +579,140 @@ def test_user_agent_is_never_spoofed(proxy_server, upstream):
     requests.get(f"{base}/v1/models", headers=auth() | {"User-Agent": real_ua}, timeout=10)
     recv = upstream.state.received[0]
     assert recv["headers"]["User-Agent"] == real_ua
+
+
+# ---------------------------------------------------------------------------
+# API-key management (create / list / enable / disable) — admin-only
+# ---------------------------------------------------------------------------
+def _admin(base):
+    return {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
+
+
+def test_create_key_returns_plaintext_once(proxy_server, upstream):
+    """POST /__api/keys returns the full key once; the stored record never contains it."""
+    base = proxy_server["base"]
+    r = requests.post(f"{base}/__api/keys", json={"name": "alice"}, headers=_admin(base), timeout=10)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["name"] == "alice"
+    new_key = body["key"]
+    assert len(new_key) >= 24
+    # the new key actually works
+    upstream.state.hold_event.set()
+    rr = requests.get(f"{base}/v1/models", headers=auth(new_key), timeout=10)
+    assert rr.status_code == 200
+    # the DB record does not contain the key (only its hash)
+    rows = db_rows(proxy_server["db"])
+    assert all(new_key not in str(r) for r in rows)
+
+
+def test_key_list_shows_masked_keys(proxy_server, upstream):
+    """GET /__api/keys returns name + masked key, never plaintext."""
+    base = proxy_server["base"]
+    requests.post(f"{base}/__api/keys", json={"name": "bob"}, headers=_admin(base), timeout=10)
+    r = requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10)
+    assert r.status_code == 200
+    keys = {k["name"]: k for k in r.json()["keys"]}
+    assert "bob" in keys
+    # masked: last 4 only, prefixed (never the raw key)
+    mask = keys["bob"]["masked"]
+    assert mask != "" and mask.endswith(keys["bob"]["key_last4"])
+    assert "..." in mask or mask.startswith("sk-")
+
+
+def test_create_key_requires_admin(proxy_server, upstream):
+    """A non-admin key cannot create keys."""
+    base = proxy_server["base"]
+    r = requests.post(f"{base}/__api/keys", json={"name": "mallory"}, headers=auth(), timeout=10)
+    assert r.status_code == 401
+
+
+def test_create_duplicate_name_rejected(proxy_server, upstream):
+    base = proxy_server["base"]
+    h = _admin(base)
+    r1 = requests.post(f"{base}/__api/keys", json={"name": "carol"}, headers=h, timeout=10)
+    assert r1.status_code == 201
+    r2 = requests.post(f"{base}/__api/keys", json={"name": "carol"}, headers=h, timeout=10)
+    assert r2.status_code == 409  # duplicate name
+
+
+def test_disable_key_rejects_requests(proxy_server, upstream):
+    """Disabling a key makes it stop authenticating immediately, without a restart."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "dave"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+
+    upstream.state.hold_event.set()
+    assert requests.get(f"{base}/v1/models", headers=auth(key), timeout=10).status_code == 200
+
+    # disable it
+    dr = requests.patch(f"{base}/__api/keys/{kid}", json={"enabled": False}, headers=_admin(base), timeout=10)
+    assert dr.status_code == 200
+    # now the key is rejected (without restart)
+    rr = requests.get(f"{base}/v1/models", headers=auth(key), timeout=10)
+    assert rr.status_code == 401
+
+
+def test_enable_key_restores_access(proxy_server, upstream):
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "erin"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+    requests.patch(f"{base}/__api/keys/{kid}", json={"enabled": False}, headers=_admin(base), timeout=10)
+
+    upstream.state.hold_event.set()
+    assert requests.get(f"{base}/v1/models", headers=auth(key), timeout=10).status_code == 401
+    # re-enable
+    requests.patch(f"{base}/__api/keys/{kid}", json={"enabled": True}, headers=_admin(base), timeout=10)
+    assert requests.get(f"{base}/v1/models", headers=auth(key), timeout=10).status_code == 200
+
+
+def test_disable_admin_key_admin_surface_still_works(proxy_server, upstream):
+    """A disabled managed key cannot read the dashboard; the env admin key still can."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "superadmin", "role": "admin"},
+                            headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+    # the new admin key can hit the dashboard
+    assert requests.get(f"{base}/__dashboard", headers=auth(key), timeout=10).status_code == 200
+    # disable it -> no longer admin
+    requests.patch(f"{base}/__api/keys/{kid}", json={"enabled": False}, headers=_admin(base), timeout=10)
+    assert requests.get(f"{base}/__dashboard", headers=auth(key), timeout=10).status_code == 401
+    # the env (implicit) admin key still works
+    assert requests.get(f"{base}/__dashboard", headers=_admin(base), timeout=10).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Key attribution — each request records WHICH key was used
+# ---------------------------------------------------------------------------
+def test_request_records_key_name(proxy_server, upstream):
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", headers=auth(TEST_MOBIN_KEY), timeout=10)
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["key_name"] == "mobin"
+
+
+def test_request_records_created_key_name(proxy_server, upstream):
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "frank"}, headers=_admin(base), timeout=10).json()
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", headers=auth(created["key"]), timeout=10)
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["key_name"] == "frank"
+
+
+def test_request_records_hermes_key_name(proxy_server, upstream):
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", headers=auth("local-hermes-upstream-key"), timeout=10)
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["key_name"] == "hermes"
+
+
+def test_api_includes_key_name(proxy_server, upstream):
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    requests.get(f"{base}/v1/models", headers=auth(TEST_NIRJHOR_KEY), timeout=10)
+    wait_for_rows(proxy_server["db"], 1)
+    body = requests.get(f"{base}/__api/requests?limit=5", headers=_admin(base), timeout=10).json()
+    assert body["requests"][0]["key_name"] == "nirjhor"

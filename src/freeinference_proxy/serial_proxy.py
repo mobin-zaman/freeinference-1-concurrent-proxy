@@ -58,9 +58,10 @@ _gate = threading.BoundedSemaphore(GATE_LIMIT)
 #   FREEINFERENCE_API_KEY       -> also accepted so the current Hermes provider
 #                                  (which already injects this Bearer key) keeps
 #                                  working with zero config change.
-_KEYS: "dict[str, str]" = {}       # valid LLM secret -> role label
-_ADMIN_KEYS: "frozenset[str]" = frozenset()
+_KEYS: "dict[str, str]" = {}       # valid LLM secret -> key name (raw keys, enabled only)
+_ADMIN_KEYS: "dict[str, str]" = {}  # valid admin secret -> key name
 _UPSTREAM_KEY: str = ""            # real freeinference credential, injected upstream
+_ENV_ADMIN_KEYS: "tuple[str, ...]" = ()  # master admin keys from env, never in DB
 
 _log_lock = threading.Lock()
 _db_lock = threading.Lock()
@@ -108,6 +109,7 @@ def _db() -> sqlite3.Connection:
         " waited_s REAL NOT NULL,"
         " dur_s REAL NOT NULL,"
         " user_agent TEXT NOT NULL,"
+        " key_name TEXT NOT NULL DEFAULT '',"
         " input_tokens INTEGER NOT NULL DEFAULT 0,"
         " output_tokens INTEGER NOT NULL DEFAULT 0)"
     )
@@ -117,21 +119,71 @@ def _db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE requests ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0")
     if "output_tokens" not in cols:
         conn.execute("ALTER TABLE requests ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0")
+    if "key_name" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN key_name TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS api_keys ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " name TEXT NOT NULL UNIQUE,"
+        " key_hash TEXT NOT NULL UNIQUE,"
+        " role TEXT NOT NULL DEFAULT 'llm',"
+        " enabled INTEGER NOT NULL DEFAULT 1,"
+        " created_at REAL NOT NULL,"
+        " last_used_at REAL)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_at ON requests(at DESC)")
     return conn
 
 
-def record_request(method, path, status, waited_s, dur_s, ua,
+def _hash_key(key: str) -> str:
+    """SHA-256 of a key. Plaintext keys are never stored at rest."""
+    import hashlib
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _refresh_key_cache() -> None:
+    """Rebuild the in-memory auth caches from the DB (enabled keys) plus the
+    implicit keys that are never stored in the DB (the env admin key and the
+    upstream/Hermes key). Called at startup and after every mutation so an
+    enable/disable/create takes effect without a restart.
+
+    Every entry in the caches is the SHA-256 of a key (never a raw key).
+    The hot path hashes the presented key and compares hashes in constant time."""
+    global _KEYS, _ADMIN_KEYS
+    keys, admins = {}, {}
+    # Implicit LLM key: the upstream/FREEINFERENCE credential so the current
+    # Hermes provider keeps working; can never be disabled from the dashboard.
+    if _UPSTREAM_KEY:
+        keys[_hash_key(_UPSTREAM_KEY)] = "hermes"
+    # Implicit admin key from the env — the master, always accepted.
+    for a in _ENV_ADMIN_KEYS:
+        admins[_hash_key(a)] = "admin"
+    with _db_lock:
+        conn = _db()
+        try:
+            for r in conn.execute(
+                    "SELECT name, key_hash, role, enabled FROM api_keys WHERE enabled=1"):
+                h = r["key_hash"]  # stored as a SHA-256 already
+                if r["role"] == "admin":
+                    admins.setdefault(h, r["name"])
+                keys.setdefault(h, r["name"])
+        finally:
+            conn.close()
+    _KEYS = keys
+    _ADMIN_KEYS = admins
+
+
+def record_request(method, path, status, waited_s, dur_s, ua, key_name="",
                    input_tokens=0, output_tokens=0) -> None:
     with _db_lock:
         conn = _db()
         try:
             conn.execute(
                 "INSERT INTO requests (at, ts, method, path, status, waited_s, dur_s,"
-                " user_agent, input_tokens, output_tokens)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " user_agent, key_name, input_tokens, output_tokens)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), time.strftime("%Y-%m-%d %H:%M:%S"),
-                 method, path, status, waited_s, dur_s, ua,
+                 method, path, status, waited_s, dur_s, ua, key_name or "",
                  int(input_tokens or 0), int(output_tokens or 0)),
             )
             conn.commit()
@@ -214,28 +266,135 @@ class Handler(BaseHTTPRequestHandler):
             return x.strip()
         return ""
 
-    def _authenticated(self) -> bool:
-        """Constant-time check of the presented key against the LLM key set."""
+    def _key_name(self) -> str:
+        """Return the name of the authenticated LLM key, or '' if invalid."""
         key = self._client_key()
         if not key:
-            return False
-        # constant-time over the whole set: compare the presented key to every
-        # stored key with hmac.compare_digest so timing doesn't leak membership.
-        auth_ok = False
-        for stored in _KEYS:
-            if hmac.compare_digest(key, stored):
-                auth_ok = True
-                break
-        return auth_ok
+            return ""
+        presented = _hash_key(key)
+        # constant-time over the whole set so timing doesn't leak membership.
+        for stored, name in _KEYS.items():
+            if hmac.compare_digest(presented, stored):
+                return name
+        return ""
+
+    def _authenticated(self) -> bool:
+        return bool(self._key_name())
+
+    def _admin_name(self) -> str:
+        key = self._client_key()
+        if not key:
+            return ""
+        presented = _hash_key(key)
+        for stored, name in _ADMIN_KEYS.items():
+            if hmac.compare_digest(presented, stored):
+                return name
+        return ""
 
     def _is_admin(self) -> bool:
-        key = self._client_key()
-        if not key:
+        return bool(self._admin_name())
+
+    # --- API-key management (admin-only, never counted against the gate) ----
+    def _handle_keys_admin(self) -> bool:
+        """Serve the /__api/keys manage surface. Returns True if handled."""
+        if not self.path.startswith("/__api/keys"):
             return False
-        for stored in _ADMIN_KEYS:
-            if hmac.compare_digest(key, stored):
+        if not self._is_admin():
+            self._reject_auth()
+            return True
+        base = self.path
+        # PATCH /__api/keys/<id>  {enabled: bool}
+        if self.command == "PATCH":
+            seg = base.removesuffix("/").split("/")
+            if len(seg) == 4:
+                try:
+                    kid = int(seg[3])
+                except ValueError:
+                    self._reply_json(400, {"error": {"message": "bad key id", "code": 400}})
+                    return True
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                enable = body.get("enabled")
+                if not isinstance(enable, bool):
+                    self._reply_json(400, {"error": {"message": "enabled must be bool", "code": 400}})
+                    return True
+                with _db_lock:
+                    conn = _db()
+                    try:
+                        cur = conn.execute(
+                            "UPDATE api_keys SET enabled=? WHERE id=? RETURNING name, role, enabled",
+                            (1 if enable else 0, kid))
+                        row = cur.fetchone()
+                        conn.commit()
+                    finally:
+                        conn.close()
+                if row is None:
+                    self._reply_json(404, {"error": {"message": "no such key", "code": 404}})
+                    return True
+                _refresh_key_cache()
+                self._reply_json(200, {"id": kid, "name": row["name"], "role": row["role"],
+                                       "enabled": bool(row["enabled"])})
                 return True
-        return False
+        # POST /__api/keys  {name, role?} -> 201 {id,name,role,key}
+        if self.command == "POST":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            except (json.JSONDecodeError, ValueError):
+                self._reply_json(400, {"error": {"message": "invalid JSON", "code": 400}})
+                return True
+            name = (body.get("name") or "").strip()
+            role = (body.get("role") or "llm").strip().lower()
+            if not name:
+                self._reply_json(400, {"error": {"message": "name required", "code": 400}})
+                return True
+            if role not in ("llm", "admin"):
+                self._reply_json(400, {"error": {"message": "role must be 'llm' or 'admin'", "code": 400}})
+                return True
+            import secrets
+            raw = "sk-" + secrets.token_urlsafe(32)
+            t = time.time()
+            with _db_lock:
+                conn = _db()
+                try:
+                    try:
+                        cur = conn.execute(
+                            "INSERT INTO api_keys (name, key_hash, role, enabled, created_at)"
+                            " VALUES (?,?,?,1,?) RETURNING id", (name, _hash_key(raw), role, t))
+                        kid = cur.fetchone()["id"]
+                        conn.commit()
+                    except sqlite3.IntegrityError:
+                        self._reply_json(409, {"error": {"message": "name already exists", "code": 409}})
+                        return True
+                finally:
+                    conn.close()
+            _refresh_key_cache()
+            self._reply_json(201, {"id": kid, "name": name, "role": role, "key": raw})
+            return True
+        # GET /__api/keys -> list (masked)
+        if self.command == "GET":
+            rows = []
+            with _db_lock:
+                conn = _db()
+                try:
+                    for r in conn.execute(
+                            "SELECT id, name, role, enabled, created_at, last_used_at, key_hash"
+                            " FROM api_keys ORDER BY id"):
+                        h = r["key_hash"]
+                        rows.append({
+                            "id": r["id"], "name": r["name"], "role": r["role"],
+                            "enabled": bool(r["enabled"]), "created_at": r["created_at"],
+                            "last_used_at": r["last_used_at"],
+                            "key_last4": h[-4:],
+                            "masked": "sk-…" + h[-4:],
+                        })
+                finally:
+                    conn.close()
+            self._reply_json(200, {"keys": rows})
+            return True
+        # Unsupported method on /__api/keys
+        self._reply_json(405, {"error": {"message": "method not allowed", "code": 405}})
+        return True
 
     def _is_public_noise(self) -> bool:
         return self.command == "GET" and self.path in (
@@ -270,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         rows = conn.execute(
                             "SELECT id, at, ts, method, path, status, waited_s, dur_s, user_agent,"
-                            " input_tokens, output_tokens"
+                            " key_name, input_tokens, output_tokens"
                             " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
                     finally:
                         conn.close()
@@ -282,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
                             "method": r["method"], "path": r["path"],
                             "status": r["status"], "waited_s": r["waited_s"],
                             "dur_s": r["dur_s"], "user_agent": r["user_agent"],
+                            "key_name": r["key_name"],
                             "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
                         }
                         self.wfile.write(("data: %s\n\n" % json.dumps(payload)).encode())
@@ -338,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
                 conn = _db()
                 rows = conn.execute(
                     f"SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
-                    f" input_tokens, output_tokens FROM requests {where}"
+                    f" key_name, input_tokens, output_tokens FROM requests {where}"
                     f" ORDER BY id DESC LIMIT ?", params + (limit,)).fetchall()
                 total, errs = conn.execute(
                     "SELECT COUNT(*), SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)"
@@ -376,9 +536,10 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         is_admin_path = (
-            self.command == "GET"
-            and (self.path.startswith("/__dashboard")
-                 or self.path.startswith("/__api/"))
+            self.path.startswith("/__api/keys")
+            or (self.command == "GET"
+                and (self.path.startswith("/__dashboard")
+                     or self.path.startswith("/__api/")))
         )
         if is_admin_path:
             if not self._is_admin():
@@ -388,8 +549,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authenticated():
                 self._reject_auth()
                 return
+        if self._handle_keys_admin():
+            return
         if self._serve_local():
             return
+        key_name = self._key_name()
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -418,7 +582,8 @@ class Handler(BaseHTTPRequestHandler):
                 "path": self.path, "waited_s": ACQUIRE_TIMEOUT,
             }))
             record_request(self.command, self.path, 429,
-                           ACQUIRE_TIMEOUT, 0, fwd_headers.get("User-Agent", ""))
+                           ACQUIRE_TIMEOUT, 0, fwd_headers.get("User-Agent", ""),
+                           key_name)
             self._reply_json(429, {
                 "error": {
                     "message": "local freeinference serialization queue timed out",
@@ -446,7 +611,7 @@ class Handler(BaseHTTPRequestHandler):
                 }))
                 record_request(self.command, self.path, 502,
                                waited_s, round(time.monotonic() - t0, 3),
-                               fwd_headers.get("User-Agent", ""))
+                               fwd_headers.get("User-Agent", ""), key_name)
                 self._reply_json(502, {
                     "error": {
                         "message": f"upstream connection failed: {exc}"[:300],
@@ -498,11 +663,12 @@ class Handler(BaseHTTPRequestHandler):
                 "event": "request", "method": self.command, "path": self.path,
                 "status": upstream.status_code, "waited_s": waited_s,
                 "dur_s": round(time.monotonic() - t0, 3),
-                "user_agent": ua, "input_tokens": in_tok, "output_tokens": out_tok,
+                "user_agent": ua, "key_name": key_name,
+                "input_tokens": in_tok, "output_tokens": out_tok,
             }))
             record_request(self.command, self.path, upstream.status_code,
                            waited_s, round(time.monotonic() - t0, 3), ua,
-                           in_tok, out_tok)
+                           key_name, in_tok, out_tok)
         finally:
             _gate.release()
 
@@ -517,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     global DATA_DIR, LOG_PATH, DB_PATH
     global UPSTREAM, LISTEN_HOST, LISTEN_PORT
-    global _KEYS, _ADMIN_KEYS, _UPSTREAM_KEY
+    global _KEYS, _ADMIN_KEYS, _UPSTREAM_KEY, _ENV_ADMIN_KEYS
 
     # --- Credentials from the environment (never in source / args). ---------
     # A proxy key set is required once the proxy is reachable off-loopback.
@@ -526,15 +692,8 @@ def main() -> None:
     admin = os.environ.get("FIF_AUTH_ADMIN_KEY", "").strip()
     upstream_key = os.environ.get("FIF_UPSTREAM_KEY", "").strip() \
         or os.environ.get("FREEINFERENCE_API_KEY", "").strip()
-    _keys = {}
-    if mobin:
-        _keys[mobin] = "mobin"
-    if nirjhor:
-        _keys[nirjhor] = "nirjhor"
-    if upstream_key and upstream_key not in _keys:
-        _keys[upstream_key] = "hermes"   # keeps the current Hermes provider working
-    _KEYS = _keys
-    _ADMIN_KEYS = frozenset({admin}) if admin else frozenset()
+    if admin:
+        _ENV_ADMIN_KEYS = (admin,)
     _UPSTREAM_KEY = upstream_key
 
     parser = argparse.ArgumentParser(
@@ -555,9 +714,32 @@ def main() -> None:
     DB_PATH = os.path.join(DATA_DIR, "requests.db")
     LOG_PATH = os.path.join(DATA_DIR, "proxy.log")
 
+    # Seed the env-defined LLM keys into the DB (idempotent) so they show up in
+    # the dashboard as managed keys. They are still usable regardless.
+    seed = {}
+    if mobin:
+        seed[mobin] = "mobin"
+    if nirjhor:
+        seed[nirjhor] = "nirjhor"
+    with _db_lock:
+        conn = _db()
+        try:
+            for raw, name in seed.items():
+                try:
+                    conn.execute(
+                        "INSERT INTO api_keys (name, key_hash, role, enabled, created_at)"
+                        " VALUES (?,?,'llm',1,?)",
+                        (name, _hash_key(raw), time.time()))
+                except sqlite3.IntegrityError:
+                    continue  # already seeded
+            conn.commit()
+        finally:
+            conn.close()
+    _refresh_key_cache()
+
     log(json.dumps({"event": "start", "listen": f"{LISTEN_HOST}:{LISTEN_PORT}",
                     "gate_limit": GATE_LIMIT, "upstream": UPSTREAM,
-                    "data_dir": DATA_DIR}))
+                    "data_dir": DATA_DIR, "keys": sorted(set(_KEYS.values()))}))
     server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     server.daemon_threads = True
     server.serve_forever()
