@@ -123,6 +123,7 @@ freeinference-serial-proxy
 - If `FIF_UPSTREAM_KEY` is unset the proxy falls back to `FREEINFERENCE_API_KEY`, so an existing Hermes provider (which already injects that key) keeps working with no config change.
 - The proxy injects `Authorization: Bearer $FIF_UPSTREAM_KEY` upstream itself and never forwards a client's key, so a mobin/nirjhor holder never learns or spoofs the upstream credential.
 - `/__dashboard` and `/__api/*` require `FIF_AUTH_ADMIN_KEY`, not an LLM key.
+- From the dashboard (with the admin key) you can **create, enable, and disable API keys** at runtime — the changes persist to SQLite and take effect immediately, no restart. Created keys are stored as a SHA-256 hash (plaintext is shown once at creation). Every request records **which key** was used, shown in a `Key` column on the dashboard.
 - Client `Authorization` (the proxy key) is never leaked upstream; the client's `User-Agent` is always forwarded verbatim, never spoofed.
 
 ## Limitations
