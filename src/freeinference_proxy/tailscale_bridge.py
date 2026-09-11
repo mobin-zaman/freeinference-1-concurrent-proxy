@@ -6,13 +6,14 @@ exposing the raw localhost-only proxy API on that network.
 The proxy binds 127.0.0.1 only by default, so it cannot listen on a tailnet
 IP directly. This bridge forwards the /__dashboard path (and its
 /__api/requests fetch) from the chosen interface to the localhost process.
-Pure stdlib, no third-party deps. Not required for the core proxy to work.
+Uses requests (already a dependency of the core proxy) for streaming.
+Not required for the core proxy to work.
 """
 import argparse
 import http.server
-import socket
 import socketserver
-import urllib.request
+
+import requests
 
 DEFAULT_TARGET_HOST = "127.0.0.1"
 DEFAULT_TARGET_PORT = 8788      # freeinference proxy (dashboard + api)
@@ -26,45 +27,36 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            req = urllib.request.Request(
+            headers = {k: v for k, v in dict(self.headers).items()
+                       if k.lower() not in ("content-length", "transfer-encoding", "connection", "host")}
+            upstream = requests.request(
+                "GET",
                 "http://%s:%d%s" % (self.TARGET[0], self.TARGET[1], self.path),
-                headers=dict(self.headers),
+                headers=headers, stream=True, timeout=60,
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                ctype = resp.headers.get("Content-Type", "")
-                headers = [(k, v) for k, v in resp.getheaders()
-                           if k.lower() not in ("content-length", "transfer-encoding", "connection")]
-                self.send_response(resp.status)
-                for k, v in headers:
+            ctype = upstream.headers.get("Content-Type", "")
+            self.send_response(upstream.status_code)
+            for k, v in upstream.headers.items():
+                if k.lower() not in ("content-length", "transfer-encoding", "connection"):
                     self.send_header(k, v)
-                if "text/event-stream" in ctype:
-                    # SSE: stream from the raw socket (sock.recv returns available
-                    # bytes immediately). fp.read(4096) on a blocking socket waits
-                    # for the FULL 4096 bytes — a drip-fed SSE handshake/event
-                    # stalls forever. recv(4096) returns whatever arrived.
-                    self.send_header("Connection", "keep-alive")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.end_headers()
-                    raw = resp.fp.raw
-                    sock = raw._sock  # the real socket underneath SocketIO/BufferedReader
-                    sock.settimeout(30)
-                    while True:
-                        try:
-                            chunk = sock.recv(4096)
-                        except socket.timeout:
-                            continue
-                        if not chunk:
-                            break
-                        try:
-                            self.wfile.write(chunk)
-                            self.wfile.flush()
-                        except (BrokenPipeError, ConnectionResetError):
-                            return
-                else:
-                    body = resp.read()
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+            if "text/event-stream" in ctype:
+                # SSE: stream via iter_content (transparent chunked de-framing).
+                # The previous resp.fp.raw._sock recv() bypassed urllib's read
+                # buffer and stalled/truncated when data sat in the internal
+                # buffer instead of on the wire.
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                for chunk in upstream.iter_content(chunk_size=4096):
+                    if not chunk:
+                        continue
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            else:
+                body = upstream.content
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
         except Exception as exc:
             body = ("proxy error: %s" % exc).encode()
             self.send_response(502)

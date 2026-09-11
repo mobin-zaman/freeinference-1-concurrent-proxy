@@ -206,7 +206,12 @@ def parse_usage_tokens(body: bytes) -> tuple[int, int]:
     # Non-streaming JSON, or an SSE line carrying the usage payload.
     candidates = []
     if text.lstrip().startswith("{"):
-        candidates.append(json.loads(text))
+        # Whole-body JSON (non-streaming). Guard it: a body cut mid-object by
+        # an upstream interruption would otherwise crash the whole request thread.
+        try:
+            candidates.append(json.loads(text))
+        except (json.JSONDecodeError, ValueError):
+            return 0, 0
     else:
         for line in text.splitlines():
             if line.startswith("data:"):
