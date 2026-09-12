@@ -25,6 +25,7 @@ import argparse
 import hmac
 import json
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -40,6 +41,9 @@ LISTEN_PORT = 8788
 GATE_LIMIT = 1              # hard global serialization: 1 in-flight request
 ACQUIRE_TIMEOUT = 300       # max seconds to wait in queue before 429ing
 READ_TIMEOUT = (30, 900)    # (connect, read) — long generations need patience
+UPSTREAM_429_RETRIES = 2    # extra attempts after an upstream 429 (transient rate limit)
+RETRY_AFTER_CAP_S = 5       # cap on honored Retry-After seconds
+RETRY_BASE_DELAY_S = 1.0    # fallback delay between upstream-429 retries
 DATA_DIR_DEFAULT = "~/.local/share/freeinference-1-concurrent-proxy"
 
 # Hop-by-hop headers must not be forwarded in either direction.
@@ -49,6 +53,16 @@ _HOP_BY_HOP = {
 }
 
 _gate = threading.BoundedSemaphore(GATE_LIMIT)
+
+
+def _parse_retry_after(value: str):
+    """Parse a Retry-After header into seconds (float) or None if absent/invalid."""
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None  # HTTP-date form unsupported; fall back to the fixed delay
 
 # Authorization enforced since the proxy can be exposed beyond localhost.
 # secrets live in the environment, never in source:
@@ -640,14 +654,31 @@ class Handler(BaseHTTPRequestHandler):
         try:
             waited_s = round(time.monotonic() - t0, 3)
             try:
-                upstream = requests.request(
-                    self.command,
-                    UPSTREAM + self.path,
-                    headers=fwd_headers,
-                    data=body,
-                    stream=True,
-                    timeout=READ_TIMEOUT,
-                )
+                attempts = 1 + UPSTREAM_429_RETRIES  # first try + bounded retries
+                for attempt in range(attempts):
+                    upstream = requests.request(
+                        self.command,
+                        UPSTREAM + self.path,
+                        headers=fwd_headers,
+                        data=body,
+                        stream=True,
+                        timeout=READ_TIMEOUT,
+                    )
+                    if upstream.status_code != 429 or attempt == attempts - 1:
+                        break
+                    # Transient upstream rate-limit: back off (gate stays held) and
+                    # retry so a single blip never 429-cascades every queued client.
+                    retry_after = _parse_retry_after(upstream.headers.get("Retry-After", ""))
+                    delay = (min(retry_after, RETRY_AFTER_CAP_S)
+                             if retry_after is not None
+                             else max(RETRY_BASE_DELAY_S + random.random() * 0.5,
+                                      RETRY_BASE_DELAY_S))
+                    log(json.dumps({
+                        "event": "upstream_429_retry", "method": self.command,
+                        "path": self.path, "attempt": attempt + 1,
+                        "retry_after": retry_after, "delay_s": round(delay, 3),
+                    }))
+                    time.sleep(max(delay, 0.0))
             except requests.RequestException as exc:
                 log(json.dumps({
                     "event": "upstream_error", "method": self.command,

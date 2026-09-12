@@ -44,6 +44,7 @@ class UpstreamState:
         self._active = 0          # current in-flight count
         self.max_active = 0       # peak in-flight count (the serialization check)
         self.fail = False         # if True, respond 500 (upstream error path)
+        self.burst_429s = 0       # remaining 429 responses to emit before succeeding
 
     def track_active(self):
         with self.lock:
@@ -81,6 +82,17 @@ class UpstreamHandler(BaseHTTPRequestHandler):
                 payload = b'{"error":"boom"}'
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if state.burst_429s > 0:
+                with state.lock:
+                    state.burst_429s -= 1
+                payload = b'{"error":"Too many concurrent requests (limit: 1)"}'
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", getattr(state, "retry_after", "0"))
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -716,3 +728,56 @@ def test_api_includes_key_name(proxy_server, upstream):
     wait_for_rows(proxy_server["db"], 1)
     body = requests.get(f"{base}/__api/requests?limit=5", headers=_admin(base), timeout=10).json()
     assert body["requests"][0]["key_name"] == "nirjhor"
+
+
+# ---------------------------------------------------------------------------
+# Upstream 429 -> bounded retry with backoff (transient rate-limit drain)
+# ---------------------------------------------------------------------------
+def _fast_retries(monkeypatch):
+    """Zero out the retry backoff so tests don't sleep."""
+    monkeypatch.setattr(proxy, "RETRY_BASE_DELAY_S", 0.0)
+    monkeypatch.setattr(proxy, "RETRY_AFTER_CAP_S", 0.0)
+
+
+def test_transient_upstream_429_retries_then_succeeds(proxy_server, upstream, monkeypatch):
+    """A single transient upstream 429 must not fail the client: retry succeeds."""
+    _fast_retries(monkeypatch)
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    upstream.state.burst_429s = 1          # first attempt 429, second attempt OK
+    r = requests.post(f"{base}/v1/chat/completions", headers=auth(),
+                      json={"model": "deepseek-v4-flash", "messages": [{}, {}]}, timeout=20)
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    # the upstream saw both the 429 attempt and the retried success
+    assert sum(1 for x in upstream.state.received
+               if x["path"] == "/v1/chat/completions") >= 2
+
+
+def test_transient_upstream_429_respects_retry_after_and_caps_backoff(proxy_server, upstream, monkeypatch):
+    """Upstream Retry-After is honored but capped by RETRY_AFTER_CAP_S."""
+    _fast_retries(monkeypatch)
+    base = proxy_server["base"]
+    # a huge Retry-After must be clamped down to RETRY_AFTER_CAP_S (0 here) so we
+    # don't stall the queue for the cap ceiling on a transient blip.
+    upstream.state.hold_event.set()
+    upstream.state.retry_after = "3600"
+    monkeypatch.setattr(proxy, "RETRY_AFTER_CAP_S", 0.0)
+    upstream.state.burst_429s = 1
+    r = requests.post(f"{base}/v1/chat/completions", headers=auth(),
+                      json={"model": "deepseek-v4-flash", "messages": [{}, {}]}, timeout=20)
+    assert r.status_code == 200, r.text
+
+
+def test_persistent_upstream_429_is_forwarded_after_exhausting_retries(proxy_server, upstream, monkeypatch):
+    """If upstream keeps 429ing, the client still gets a 429 (deduped, no worse)."""
+    _fast_retries(monkeypatch)
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    upstream.state.burst_429s = 10         # exhaust all retries too
+    r = requests.post(f"{base}/v1/chat/completions", headers=auth(),
+                      json={"model": "deepseek-v4-flash", "messages": [{}, {}]}, timeout=20)
+    assert r.status_code == 429
+    # the upstream was attempted 1 + UPSTREAM_429_RETRIES times (all 429)
+    attempts = sum(1 for x in upstream.state.received if x["path"] == "/v1/chat/completions")
+    assert attempts == 1 + proxy.UPSTREAM_429_RETRIES
