@@ -207,7 +207,7 @@ def parse_usage_tokens(body: bytes) -> tuple[int, int]:
     candidates = []
     if text.lstrip().startswith("{"):
         # Whole-body JSON (non-streaming). Guard it: a body cut mid-object by
-        # an upstream interruption would otherwise crash the whole request thread.
+        # an upstream interruption would otherwise crash the whole thread.
         try:
             candidates.append(json.loads(text))
         except (json.JSONDecodeError, ValueError):
@@ -379,19 +379,48 @@ class Handler(BaseHTTPRequestHandler):
         # GET /__api/keys -> list (masked)
         if self.command == "GET":
             rows = []
+            # Time window: today / 7d / 30d / all (default all) — mirrors the
+            # /__api/requests handler so per-key token totals follow the filter.
+            rng = "all"
+            if "range=" in self.path:
+                cand = self.path.split("range=")[-1].split("&")[0].strip().lower()
+                if cand in ("today", "7d", "30d", "all"):
+                    rng = cand
+            now = time.time()
+            if rng == "today":
+                start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
+                rngclause, rngpar = " AND at >= ?", [start]
+            elif rng == "7d":
+                rngclause, rngpar = " AND at >= ?", [now - 7 * 86400]
+            elif rng == "30d":
+                rngclause, rngpar = " AND at >= ?", [now - 30 * 86400]
+            else:
+                rngclause, rngpar = "", []
             with _db_lock:
                 conn = _db()
                 try:
+                    # Per-key token totals from the request log within the window.
+                    # Keyed by key_name so implicit keys (e.g. 'hermes') are
+                    # included even though they're not in the api_keys table.
+                    tok = {}
+                    for r in conn.execute(
+                            "SELECT key_name, COALESCE(SUM(input_tokens),0) AS it,"
+                            " COALESCE(SUM(output_tokens),0) AS ot"
+                            " FROM requests WHERE key_name != ''" + rngclause +
+                            " GROUP BY key_name", rngpar):
+                        tok[r["key_name"]] = (r["it"], r["ot"])
                     for r in conn.execute(
                             "SELECT id, name, role, enabled, created_at, last_used_at, key_hash"
                             " FROM api_keys ORDER BY id"):
                         h = r["key_hash"]
+                        it, ot = tok.get(r["name"], (0, 0))
                         rows.append({
                             "id": r["id"], "name": r["name"], "role": r["role"],
                             "enabled": bool(r["enabled"]), "created_at": r["created_at"],
                             "last_used_at": r["last_used_at"],
                             "key_last4": h[-4:],
                             "masked": "sk-…" + h[-4:],
+                            "input_tokens": int(it), "output_tokens": int(ot),
                         })
                 finally:
                     conn.close()
@@ -488,23 +517,33 @@ class Handler(BaseHTTPRequestHandler):
             if "range=" in self.path:
                 cand = self.path.split("range=")[-1].split("&")[0].strip().lower()
                 if cand in ("today", "7d", "30d", "all"):
-                                    rng = cand
+                    rng = cand
             now = time.time()
             if rng == "today":
                 start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
-                where, params = "WHERE at >= ?", (start,)
+                clauses, params = ["at >= ?"], [start]
             elif rng == "7d":
-                where, params = "WHERE at >= ?", (now - 7 * 86400,)
+                clauses, params = ["at >= ?"], [now - 7 * 86400]
             elif rng == "30d":
-                where, params = "WHERE at >= ?", (now - 30 * 86400,)
+                clauses, params = ["at >= ?"], [now - 30 * 86400]
             else:
-                where, params = "", ()
+                clauses, params = [], []
+            # App-key/user filter: &key=<name> (or 'all'/'') shows only that key.
+            keyf = ""
+            if "key=" in self.path:
+                cand = self.path.split("key=")[-1].split("&")[0].strip()
+                if cand and cand != "all":
+                    keyf = cand
+            if keyf:
+                clauses.append("key_name = ?")
+                params.append(keyf)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             with _db_lock:
                 conn = _db()
                 rows = conn.execute(
                     f"SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
                     f" key_name, input_tokens, output_tokens FROM requests {where}"
-                    f" ORDER BY id DESC LIMIT ?", params + (limit,)).fetchall()
+                    f" ORDER BY id DESC LIMIT ?", params + [limit]).fetchall()
                 total, errs = conn.execute(
                     "SELECT COUNT(*), SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)"
                     f" FROM requests {where}", params).fetchone()

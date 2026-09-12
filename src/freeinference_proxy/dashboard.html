@@ -236,6 +236,16 @@
   .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
 
   /* API Keys management section */
+  /* Key filter select */
+  .key-filter { display: inline-flex; align-items: center; gap: 6px; }
+  .key-filter select {
+    font-family: var(--mono); font-size: 11px; color: var(--fg);
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px 8px; height: 30px; cursor: pointer;
+  }
+  .key-filter .kf-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+  /* API Keys management section */
   .keys-grid { display: grid; gap: 10px; }
   .key-row {
     display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -465,6 +475,9 @@
     <div class="section-head">
       <h2>Recent requests</h2>
       <div class="chips">
+        <span class="key-filter"><span class="kf-label">Key</span>
+          <select id="key-select" title="Filter by app key"><option value="all">All keys</option></select>
+        </span>
         <span class="chip">in: <b id="c-intok">0</b></span>
         <span class="chip">out: <b id="c-outtok">0</b></span>
       </div>
@@ -494,6 +507,8 @@ const $ = (id) => document.getElementById(id);
 let firstPaint = true;
 let shownRange = 'all';
 let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
+let keyName = 'all'; // active app-key filter, 'all' = every key
+let keyNames = new Set(); // distinct keys offered in the filter dropdown
 
 // ---- Theme ----
 function setTheme(t, persist = true) {
@@ -530,6 +545,7 @@ function setRange(range) {
     rangeStart = 0;
   }
   load();
+  loadKeys(); // per-key token totals follow the active range filter
 }
 seg.querySelectorAll('button').forEach((b) =>
   b.addEventListener('click', () => setRange(b.dataset.range)));
@@ -555,15 +571,37 @@ function fmtTok(n) {
   return String(n);
 }
 
+function renderKeyFilter() {
+  const sel = $('key-select');
+  const cur = sel.value;
+  const names = ['all', ...[...keyNames].sort()];
+  // Preserve selection unless it's no longer present (fall back to all).
+  const want = keyNames.has(cur) ? cur : 'all';
+  sel.innerHTML = names.map(n => {
+    const label = n === 'all' ? 'All keys' : n;
+    return `<option value="${esc(n)}"${n === want ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+}
+$('key-select').addEventListener('change', (e) => {
+  keyName = e.target.value || 'all';
+  load();
+});
+
 async function load() {
   const btn = $('refresh');
   btn.classList.add('loading');
   try {
-    const res = await fetch('/__api/requests?limit=100&range=' + shownRange);
+    const res = await fetch('/__api/requests?limit=100&range=' + shownRange + '&key=' + keyName);
     const data = await res.json();
     const total = data.total || 0;
     const errors = data.errors || 0;
     const rows = data.requests || [];
+
+    // Track every key seen so the filter dropdown stays current (incl. the
+    // implicit 'hermes' key, which is never in the api_keys table).
+    let grew = false;
+    rows.forEach(r => { if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); grew = true; } });
+    if (grew) renderKeyFilter();
 
     updateStats(total, errors, rows);
     renderTable(rows, true);
@@ -645,6 +683,9 @@ function prependRow(r) {
   }
   // Filter by the active window: a brand-new row may fall outside today/7d/30d.
   if (rangeStart && r.at < rangeStart) return;
+  // Filter by the active app key.
+  if (keyName !== 'all' && r.key_name !== keyName) return;
+  if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); renderKeyFilter(); }
   const tbody = $('rows');
   const empty = tbody.querySelector('.empty');
   if (empty) tbody.innerHTML = '';
@@ -687,10 +728,13 @@ let keysLoaded = false;
 async function loadKeys() {
   const grid = $('keys-grid');
   try {
-    const res = await fetch('/__api/keys');
+    const res = await fetch('/__api/keys?range=' + shownRange);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const keys = data.keys || [];
+    let grew = false;
+    keys.forEach(k => { if (k.name && !keyNames.has(k.name)) { keyNames.add(k.name); grew = true; } });
+    if (grew) renderKeyFilter();
     $('k-count').textContent = keys.length + (keys.length === 1 ? ' key' : ' keys');
     if (!keys.length) {
       grid.innerHTML = '<div class="empty">No API keys yet. Create one below.</div>';
@@ -717,11 +761,16 @@ function renderKey(k) {
   const toggleLabel = en ? 'Disable' : 'Enable';
   const role = k.role === 'admin' ? '<span class="k-role admin">admin</span>' : '<span class="k-role">llm</span>';
   const state = en ? '<span class="k-on">● enabled</span>' : '<span class="k-off-disabled">● disabled</span>';
+  const it = k.input_tokens || 0, ot = k.output_tokens || 0;
+  const toks = (it || ot)
+    ? `<span style="font-size:10px;color:var(--fg)"><span style="color:var(--accent)">in ${fmtTok(it)}</span> · <span style="color:var(--quit)">out ${fmtTok(ot)}</span></span>`
+    : '<span class="k-none-mini" style="font-size:10px;color:var(--muted);opacity:.6">no usage</span>';
   return `<div class="key-row" data-id="${k.id}">
     <span class="k-name" title="${esc(k.name)}">${esc(k.name)}</span>
     <span class="k-mask" title="${esc(k.masked)}">${esc(k.masked)}</span>
     ${role}
     ${state}
+    ${toks}
     <span class="k-meta" style="font-size:10px;color:var(--muted)">last used ${fmtWhen(k.last_used_at)}</span>
     <button class="toggle ${toggleCls}" data-id="${k.id}" data-enabled="${en ? 1 : 0}">${toggleLabel}</button>
   </div>`;
@@ -804,6 +853,8 @@ $('key-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('key
 loadKeys();
 
 setRange('all');
+
+connect();
 </script>
 </body>
 </html>
