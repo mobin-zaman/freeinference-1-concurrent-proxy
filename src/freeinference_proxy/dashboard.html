@@ -465,6 +465,7 @@ let shownRange = 'all';
 let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
 let keyName = 'all'; // active app-key filter, 'all' = every key
 let keyNames = new Set(); // distinct keys offered in the filter dropdown
+let _inTok = 0, _outTok = 0; // running full-window token aggregates (set by load, incremented by prependRow)
 
 // ---- Theme (dark is the product look; there is no light mode) ----
 document.documentElement.setAttribute('data-theme', 'dark');
@@ -541,6 +542,7 @@ async function load() {
     const rows = data.requests || [];
     const inTok = data.input_tokens || 0;    // full-window aggregate, not the 100-row subset
     const outTok = data.output_tokens || 0;
+    _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
 
     // Track every key seen so the filter dropdown stays current (incl. the
     // implicit 'hermes' key, which is never in the api_keys table).
@@ -641,10 +643,15 @@ function prependRow(r) {
     input_tokens: parseFloat(tr.children[6].textContent.replace(/[^\d]/g, '')) || 0,
     output_tokens: parseFloat(tr.children[7].textContent.replace(/[^\d]/g, '')) || 0,
   }));
+  // Keep the stat-card token totals alive across realtime adds (never zero them).
+  _inTok += r.input_tokens || 0;
+  _outTok += r.output_tokens || 0;
   updateStats(
     (parseInt($('s-total').textContent.replace(/[^\d]/g, '')) + 1) || 0,
     r.status >= 400 ? (parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) + 1) || 0 : parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) || 0,
-    rows
+    rows,
+    _inTok,
+    _outTok
   );
   $('ts').textContent = 'live · ' + new Date().toLocaleTimeString();
 }
