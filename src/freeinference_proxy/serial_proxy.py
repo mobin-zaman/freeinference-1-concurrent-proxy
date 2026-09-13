@@ -74,6 +74,7 @@ def _parse_retry_after(value: str):
 #                                  working with zero config change.
 _KEYS: "dict[str, str]" = {}       # valid LLM secret -> key name (raw keys, enabled only)
 _ADMIN_KEYS: "dict[str, str]" = {}  # valid admin secret -> key name
+_KEY_LIMITS: "dict[str, int]" = {}  # key name -> daily input-token cap (0/absent = unlimited)
 _UPSTREAM_KEY: str = ""            # real freeinference credential, injected upstream
 _ENV_ADMIN_KEYS: "tuple[str, ...]" = ()  # master admin keys from env, never in DB
 
@@ -146,6 +147,11 @@ def _db() -> sqlite3.Connection:
         " last_used_at REAL)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_at ON requests(at DESC)")
+    # Per-key daily input-token cap (NULL / absent = unlimited). Configurable via
+    # the dashboard; enforced in the proxy request path before hitting upstream.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(api_keys)")}
+    if "daily_input_limit" not in cols:
+        conn.execute("ALTER TABLE api_keys ADD COLUMN daily_input_limit INTEGER")
     return conn
 
 
@@ -163,8 +169,8 @@ def _refresh_key_cache() -> None:
 
     Every entry in the caches is the SHA-256 of a key (never a raw key).
     The hot path hashes the presented key and compares hashes in constant time."""
-    global _KEYS, _ADMIN_KEYS
-    keys, admins = {}, {}
+    global _KEYS, _ADMIN_KEYS, _KEY_LIMITS
+    keys, admins, limits = {}, {}, {}
     # Implicit LLM key: the upstream/FREEINFERENCE credential so the current
     # Hermes provider keeps working; can never be disabled from the dashboard.
     if _UPSTREAM_KEY:
@@ -176,15 +182,42 @@ def _refresh_key_cache() -> None:
         conn = _db()
         try:
             for r in conn.execute(
-                    "SELECT name, key_hash, role, enabled FROM api_keys WHERE enabled=1"):
+                    "SELECT name, key_hash, role, enabled, daily_input_limit"
+                    " FROM api_keys WHERE enabled=1"):
                 h = r["key_hash"]  # stored as a SHA-256 already
                 if r["role"] == "admin":
                     admins.setdefault(h, r["name"])
                 keys.setdefault(h, r["name"])
+                if r["daily_input_limit"] is not None:
+                    limits[r["name"]] = int(r["daily_input_limit"])
         finally:
             conn.close()
     _KEYS = keys
     _ADMIN_KEYS = admins
+    _KEY_LIMITS = limits
+    # Every mutation that changes a cap rebuilds the cache; enforcement reads
+    # only the in-memory dict, never the DB, on the hot path.
+
+
+def _daily_midnight_epoch() -> float:
+    """Epoch seconds of the start of today (local calendar day)."""
+    now = time.time()
+    return time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
+
+
+def _daily_input_used(key_name: str) -> int:
+    """Input tokens logged today for this key (post-execution totals from the
+    request log). Used by the per-key daily input-token limiter."""
+    start = _daily_midnight_epoch()
+    with _db_lock:
+        conn = _db()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(input_tokens),0) FROM requests"
+                " WHERE key_name=? AND at>=?", (key_name, start)).fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
 
 
 def record_request(method, path, status, waited_s, dur_s, ua, key_name="",
@@ -322,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reject_auth()
             return True
         base = self.path
-        # PATCH /__api/keys/<id>  {enabled: bool}
+        # PATCH /__api/keys/<id>  {enabled?: bool, daily_input_limit?: int|null}
         if self.command == "PATCH":
             seg = base.removesuffix("/").split("/")
             if len(seg) == 4:
@@ -333,16 +366,32 @@ class Handler(BaseHTTPRequestHandler):
                     return True
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}") if length else {}
-                enable = body.get("enabled")
-                if not isinstance(enable, bool):
-                    self._reply_json(400, {"error": {"message": "enabled must be bool", "code": 400}})
+                sets, params = [], []
+                if "enabled" in body:
+                    enable = body["enabled"]
+                    if not isinstance(enable, bool):
+                        self._reply_json(400, {"error": {"message": "enabled must be bool", "code": 400}})
+                        return True
+                    sets.append("enabled=?")
+                    params.append(1 if enable else 0)
+                if "daily_input_limit" in body:
+                    lim = body["daily_input_limit"]
+                    if lim is not None and (not isinstance(lim, int) or isinstance(lim, bool) or lim < 0):
+                        self._reply_json(400, {"error": {"message": "daily_input_limit must be a non-negative int or null", "code": 400}})
+                        return True
+                    sets.append("daily_input_limit=?")
+                    params.append(lim)
+                if not sets:
+                    self._reply_json(400, {"error": {"message": "nothing to update (send enabled and/or daily_input_limit)", "code": 400}})
                     return True
+                params.append(kid)
                 with _db_lock:
                     conn = _db()
                     try:
                         cur = conn.execute(
-                            "UPDATE api_keys SET enabled=? WHERE id=? RETURNING name, role, enabled",
-                            (1 if enable else 0, kid))
+                            "UPDATE api_keys SET " + ", ".join(sets) +
+                            " WHERE id=? RETURNING name, role, enabled, daily_input_limit",
+                            params)
                         row = cur.fetchone()
                         conn.commit()
                     finally:
@@ -352,7 +401,8 @@ class Handler(BaseHTTPRequestHandler):
                     return True
                 _refresh_key_cache()
                 self._reply_json(200, {"id": kid, "name": row["name"], "role": row["role"],
-                                       "enabled": bool(row["enabled"])})
+                                       "enabled": bool(row["enabled"]),
+                                       "daily_input_limit": row["daily_input_limit"]})
                 return True
         # DELETE /__api/keys/<id>  -> 204 (removes the key from the DB + auth cache)
         if self.command == "DELETE":
@@ -449,8 +499,8 @@ class Handler(BaseHTTPRequestHandler):
                             " GROUP BY key_name", rngpar):
                         tok[r["key_name"]] = (r["it"], r["ot"])
                     for r in conn.execute(
-                            "SELECT id, name, role, enabled, created_at, last_used_at, key_hash"
-                            " FROM api_keys ORDER BY id"):
+                            "SELECT id, name, role, enabled, created_at, last_used_at, key_hash,"
+                            " daily_input_limit FROM api_keys ORDER BY id"):
                         h = r["key_hash"]
                         it, ot = tok.get(r["name"], (0, 0))
                         rows.append({
@@ -460,6 +510,7 @@ class Handler(BaseHTTPRequestHandler):
                             "key_last4": h[-4:],
                             "masked": "sk-…" + h[-4:],
                             "input_tokens": int(it), "output_tokens": int(ot),
+                            "daily_input_limit": r["daily_input_limit"],
                         })
                 finally:
                     conn.close()
@@ -678,6 +729,26 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             waited_s = round(time.monotonic() - t0, 3)
+            # Per-key daily input-token cap: enforced inside the gate critical
+            # section so concurrent requests are serialized against a stable
+            # "today so far" total (the gate is 1, so no two can admit at once).
+            limit = _KEY_LIMITS.get(key_name)
+            if limit is not None and _daily_input_used(key_name) >= limit:
+                log(json.dumps({
+                    "event": "daily_input_limit_hit", "key_name": key_name,
+                    "limit": limit, "path": self.path,
+                }))
+                record_request(self.command, self.path, 429,
+                               waited_s, round(time.monotonic() - t0, 3),
+                               fwd_headers.get("User-Agent", ""), key_name)
+                self._reply_json(429, {
+                    "error": {
+                        "message": f"daily input-token limit of {limit} reached "
+                                   f"for key '{key_name}'",
+                        "type": "daily_input_limit", "code": 429,
+                    }
+                })
+                return
             try:
                 attempts = 1 + UPSTREAM_429_RETRIES  # first try + bounded retries
                 for attempt in range(attempts):

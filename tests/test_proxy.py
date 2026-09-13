@@ -730,6 +730,76 @@ def test_delete_key_requires_admin(proxy_server, upstream):
 
 
 # ---------------------------------------------------------------------------
+# Per-key daily input-token limit
+# ---------------------------------------------------------------------------
+def test_set_and_clear_daily_input_limit(proxy_server, upstream):
+    """PATCH daily_input_limit sets the cap; GET reflects it; null clears (unlimited)."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "jared"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]
+
+    r = requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": 150_000_000}, headers=_admin(base), timeout=10)
+    assert r.status_code == 200
+    assert r.json()["daily_input_limit"] == 150_000_000
+
+    # reflected in the list
+    keys = {k["name"]: k for k in requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10).json()["keys"]}
+    assert keys["jared"]["daily_input_limit"] == 150_000_000
+
+    # clear back to unlimited
+    r = requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": None}, headers=_admin(base), timeout=10)
+    assert r.status_code == 200
+    assert r.json()["daily_input_limit"] is None
+
+
+def test_daily_input_limit_rejects_at_cap(proxy_server, upstream):
+    """A key at its daily input cap is rejected 429 with type 'daily_input_limit'."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "kate"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+
+    # cap at exactly one usage request's input tokens (11 each via X-Want-Usage).
+    requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": 11}, headers=_admin(base), timeout=10)
+
+    upstream.state.hold_event.set()
+    upstream.state.received.clear()
+    # first request uses 11 input tokens -> reaches the cap
+    assert requests.get(f"{base}/v1/models", headers=auth(key) | {"X-Want-Usage": "1"}, timeout=30).status_code == 200
+    assert len(upstream.state.received) == 1
+
+    # second request is now at/over the cap -> rejected locally, nothing upstream
+    r2 = requests.get(f"{base}/v1/models", headers=auth(key) | {"X-Want-Usage": "1"}, timeout=10)
+    assert r2.status_code == 429
+    assert r2.json()["error"]["type"] == "daily_input_limit"
+    assert len(upstream.state.received) == 1  # nothing extra reached upstream
+
+
+def test_daily_input_limit_zero_blocks_immediately(proxy_server, upstream):
+    """A cap of 0 means no input tokens allowed at all -> first request is rejected."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "leo"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+    requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": 0}, headers=_admin(base), timeout=10)
+
+    upstream.state.hold_event.set()
+    upstream.state.received.clear()
+    r = requests.get(f"{base}/v1/models", headers=auth(key), timeout=10)
+    assert r.status_code == 429
+    assert r.json()["error"]["type"] == "daily_input_limit"
+    assert upstream.state.received == []  # nothing reached upstream
+
+
+def test_daily_input_limit_rejects_bad_values(proxy_server, upstream):
+    """PATCH rejects negative or non-int caps."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "mia"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]
+    assert requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": -1}, headers=_admin(base), timeout=10).status_code == 400
+    assert requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": "lots"}, headers=_admin(base), timeout=10).status_code == 400
+    assert requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": True}, headers=_admin(base), timeout=10).status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Key attribution — each request records WHICH key was used
 # ---------------------------------------------------------------------------
 def test_request_records_key_name(proxy_server, upstream):

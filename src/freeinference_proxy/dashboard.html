@@ -684,11 +684,13 @@ async function loadKeys() {
     } else {
       grid.innerHTML = keys.map(renderKey).join('');
       grid.querySelectorAll('.toggle').forEach((b) => {
-        if (b.classList.contains('del-key')) return;
+        if (b.classList.contains('del-key') || b.classList.contains('cap-save')) return;
         b.addEventListener('click', () => toggleKey(b.dataset.id, b.dataset.enabled === '1'));
       });
       grid.querySelectorAll('.del-key').forEach((b) =>
         b.addEventListener('click', () => deleteKey(b.dataset.id, b.dataset.name)));
+      grid.querySelectorAll('.cap-save').forEach((b) =>
+        b.addEventListener('click', () => saveCap(b.dataset.id)));
     }
     keysLoaded = true;
   } catch (e) {
@@ -719,6 +721,12 @@ function renderKey(k) {
     ${state}
     ${toks}
     <span class="k-meta" style="font-size:10px;color:var(--muted)">last used ${fmtWhen(k.last_used_at)}</span>
+    <span class="cap" style="display:inline-flex;align-items:center;gap:4px">
+      <input class="cap-input" data-id="${k.id}" type="number" min="0" step="any"
+             placeholder="unlimited" style="width:110px;font:inherit;font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--card-2);color:var(--fg)"
+             value="${k.daily_input_limit != null ? k.daily_input_limit : ''}" title="Daily input-token cap">
+      <button class="toggle cap-save" data-id="${k.id}" title="Set daily input cap">Set cap</button>
+    </span>
     <button class="toggle ${toggleCls}" data-id="${k.id}" data-enabled="${en ? 1 : 0}">${toggleLabel}</button>
     <button class="toggle danger del-key" data-id="${k.id}" data-name="${esc(k.name)}" title="Delete this key">Delete</button>
   </div>`;
@@ -761,6 +769,37 @@ function deleteKey(id, name) {
     })
     .catch((e) => {
       setKeyErr('Failed to delete: ' + e.message);
+      if (btn) btn.disabled = false;
+    });
+}
+
+function saveCap(id) {
+  const input = document.querySelector(`.cap-input[data-id="${id}"]`);
+  const val = input ? input.value.trim() : '';
+  // empty string clears the cap (unlimited); otherwise must be a whole number >= 0
+  let lim = null;
+  if (val !== '') {
+    lim = Number(val);
+    if (!Number.isInteger(lim) || lim < 0) { setKeyErr('Cap must be a whole number ≥ 0 (or empty for unlimited).'); return; }
+  }
+  const btn = document.querySelector(`.cap-save[data-id="${id}"]`);
+  if (btn) btn.disabled = true;
+  setKeyErr('');
+  fetch('/__api/keys/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ daily_input_limit: lim }),
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        let msg = 'HTTP ' + res.status;
+        try { const d = await res.json(); msg = (d.error && d.error.message) || msg; } catch (e) {}
+        throw new Error(msg);
+      }
+      await loadKeys();
+    })
+    .catch((e) => {
+      setKeyErr('Failed to set cap: ' + e.message);
       if (btn) btn.disabled = false;
     });
 }
