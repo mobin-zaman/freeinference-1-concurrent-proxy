@@ -479,8 +479,9 @@ function setRange(range) {
   shownRange = range;
   const now = Date.now() / 1000;
   if (range === 'today') {
-    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-    rangeStart = midnight.getTime() / 1000;
+    // freeinference resets its daily quota at 06:00 GMT+6 == 00:00 UTC, so
+    // 'today' starts at UTC midnight, not local midnight.
+    rangeStart = Math.floor(now / 86400) * 86400;
   } else if (range === '7d') {
     rangeStart = now - 7 * 86400;
   } else if (range === '30d') {

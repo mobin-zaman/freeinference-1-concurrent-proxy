@@ -887,3 +887,18 @@ def test_persistent_upstream_429_is_forwarded_after_exhausting_retries(proxy_ser
     # the upstream was attempted 1 + UPSTREAM_429_RETRIES times (all 429)
     attempts = sum(1 for x in upstream.state.received if x["path"] == "/v1/chat/completions")
     assert attempts == 1 + proxy.UPSTREAM_429_RETRIES
+
+
+def test_daily_reset_boundary_is_utc_midnight():
+    """The quota day resets at 06:00 GMT+6 == 00:00 UTC so 'today' usage and the
+    input-token cap align with freeinference.org's own daily reset, regardless of
+    the host timezone."""
+    # now is inside the current UTC day; the boundary must be that day's 00:00 UTC
+    reset = proxy._daily_midnight_epoch()
+    import datetime
+    utc_day_start = datetime.datetime.now(datetime.timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp()
+    # allow the small window between computing 'now' and the call itself
+    assert abs(reset - utc_day_start) < 30, f"reset {reset} != UTC-midnight {utc_day_start}"
+    # and it must be an exact day boundary
+    assert reset % 86400 == 0

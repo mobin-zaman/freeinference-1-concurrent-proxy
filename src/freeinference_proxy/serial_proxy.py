@@ -200,9 +200,13 @@ def _refresh_key_cache() -> None:
 
 
 def _daily_midnight_epoch() -> float:
-    """Epoch seconds of the start of today (local calendar day)."""
-    now = time.time()
-    return time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
+    """Epoch seconds of the start of the current quota day.
+
+    freeinference.org resets its daily quota at 06:00 GMT+6 (== 00:00 UTC), so
+    the quota day boundary is UTC midnight, not local-server midnight. Using
+    UTC keeps 'today' usage and the input-token cap aligned with the provider's
+    own reset regardless of this host's timezone."""
+    return int(time.time() // 86400 * 86400)
 
 
 def _daily_input_used(key_name: str) -> int:
@@ -477,7 +481,7 @@ class Handler(BaseHTTPRequestHandler):
                     rng = cand
             now = time.time()
             if rng == "today":
-                start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
+                start = _daily_midnight_epoch()
                 rngclause, rngpar = " AND at >= ?", [start]
             elif rng == "7d":
                 rngclause, rngpar = " AND at >= ?", [now - 7 * 86400]
@@ -610,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
                     rng = cand
             now = time.time()
             if rng == "today":
-                start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, -1, -1, -1))
+                start = _daily_midnight_epoch()
                 clauses, params = ["at >= ?"], [start]
             elif rng == "7d":
                 clauses, params = ["at >= ?"], [now - 7 * 86400]
