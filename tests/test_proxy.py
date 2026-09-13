@@ -693,6 +693,42 @@ def test_disable_admin_key_admin_surface_still_works(proxy_server, upstream):
     assert requests.get(f"{base}/__dashboard", headers=_admin(base), timeout=10).status_code == 200
 
 
+def test_delete_key_removes_auth(proxy_server, upstream):
+    """DELETE /__api/keys/<id> permanently removes a key: it stops authenticating and
+    disappears from the list, without a restart. Deleting an unknown id 404s."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "gina"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+
+    upstream.state.hold_event.set()
+    assert requests.get(f"{base}/v1/models", headers=auth(key), timeout=10).status_code == 200
+
+    # delete it
+    dr = requests.delete(f"{base}/__api/keys/{kid}", headers=_admin(base), timeout=10)
+    assert dr.status_code == 200
+    assert dr.json()["deleted"] is True
+
+    # now the key is rejected immediately (cache refreshed, no restart)
+    assert requests.get(f"{base}/v1/models", headers=auth(key), timeout=10).status_code == 401
+
+    # and it's gone from the list
+    names = {k["name"] for k in requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10).json()["keys"]}
+    assert "gina" not in names
+
+    # deleting the same id again 404s
+    assert requests.delete(f"{base}/__api/keys/{kid}", headers=_admin(base), timeout=10).status_code == 404
+
+
+def test_delete_key_requires_admin(proxy_server, upstream):
+    """A non-admin key cannot delete keys."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "heidi"}, headers=_admin(base), timeout=10).json()
+    assert requests.delete(f"{base}/__api/keys/{created['id']}", headers=auth(), timeout=10).status_code == 401
+    # still present (not deleted)
+    names = {k["name"] for k in requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10).json()["keys"]}
+    assert "heidi" in names
+
+
 # ---------------------------------------------------------------------------
 # Key attribution — each request records WHICH key was used
 # ---------------------------------------------------------------------------

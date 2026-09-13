@@ -354,6 +354,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply_json(200, {"id": kid, "name": row["name"], "role": row["role"],
                                        "enabled": bool(row["enabled"])})
                 return True
+        # DELETE /__api/keys/<id>  -> 204 (removes the key from the DB + auth cache)
+        if self.command == "DELETE":
+            seg = base.removesuffix("/").split("/")
+            if len(seg) == 4:
+                try:
+                    kid = int(seg[3])
+                except ValueError:
+                    self._reply_json(400, {"error": {"message": "bad key id", "code": 400}})
+                    return True
+                with _db_lock:
+                    conn = _db()
+                    try:
+                        cur = conn.execute("DELETE FROM api_keys WHERE id=? RETURNING name, role",
+                                           (kid,))
+                        row = cur.fetchone()
+                        conn.commit()
+                    finally:
+                        conn.close()
+                if row is None:
+                    self._reply_json(404, {"error": {"message": "no such key", "code": 404}})
+                    return True
+                _refresh_key_cache()
+                self._reply_json(200, {"id": kid, "name": row["name"], "role": row["role"],
+                                       "deleted": True})
+                return True
         # POST /__api/keys  {name, role?} -> 201 {id,name,role,key}
         if self.command == "POST":
             length = int(self.headers.get("Content-Length") or 0)
