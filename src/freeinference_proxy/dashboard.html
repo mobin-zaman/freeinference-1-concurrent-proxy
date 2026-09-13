@@ -539,6 +539,8 @@ async function load() {
     const total = data.total || 0;
     const errors = data.errors || 0;
     const rows = data.requests || [];
+    const inTok = data.input_tokens || 0;    // full-window aggregate, not the 100-row subset
+    const outTok = data.output_tokens || 0;
 
     // Track every key seen so the filter dropdown stays current (incl. the
     // implicit 'hermes' key, which is never in the api_keys table).
@@ -546,7 +548,7 @@ async function load() {
     rows.forEach(r => { if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); grew = true; } });
     if (grew) renderKeyFilter();
 
-    updateStats(total, errors, rows);
+    updateStats(total, errors, rows, inTok, outTok);
     renderTable(rows, true);
     seen = new Set(rows.map(r => r.id));
     const maxId = rows.length ? Math.max(...rows.map(r => r.id)) : 0;
@@ -558,16 +560,15 @@ async function load() {
   }
 }
 
-function updateStats(total, errors, rows) {
+function updateStats(total, errors, rows, inTok, outTok) {
   setFlash($('s-total'), total.toLocaleString());
   setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : 'flash-acn');
-  // token totals over the loaded rows
-  const it = rows.reduce((a, r) => a + (r.input_tokens || 0), 0);
-  const ot = rows.reduce((a, r) => a + (r.output_tokens || 0), 0);
-  setFlash($('s-intok'), fmtTok(it), it ? 'flash-quit' : 'flash-acn');
-  setFlash($('s-outtok'), fmtTok(ot), ot ? 'flash-quit' : 'flash-acn');
-  $('c-intok').textContent = fmtTok(it);
-  $('c-outtok').textContent = fmtTok(ot);
+  // token totals: use the backend's full-window aggregate (matches the range
+  // filter), not a re-sum of the last-100 loaded rows.
+  setFlash($('s-intok'), fmtTok(inTok), inTok ? 'flash-quit' : 'flash-acn');
+  setFlash($('s-outtok'), fmtTok(outTok), outTok ? 'flash-quit' : 'flash-acn');
+  $('c-intok').textContent = fmtTok(inTok);
+  $('c-outtok').textContent = fmtTok(outTok);
   const queued = rows.filter(r => r.waited_s > 0).length;
   setFlash($('s-queued'), queued + '/' + rows.length);
   // avg queue time and avg duration over the loaded rows
