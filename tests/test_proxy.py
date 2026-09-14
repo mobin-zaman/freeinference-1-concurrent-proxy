@@ -287,6 +287,65 @@ def test_events_endpoint_is_streaming(proxy_server):
         s.close()
 
 
+def test_events_resume_after_replays_nothing(proxy_server):
+    """Reopening /__api/events?after=<id> must NOT replay rows already seen.
+
+    Regression for the dashboard boot order: connect() used to open after=0,
+    which replayed the ENTIRE request history (every row, every reconnect) —
+    an O(n) download + O(n^2) client DOM/stats work that locked the page on
+    mobile. The server's ?after= resume contract is what lets the client open
+    the stream from its newest row and only receive new traffic.
+    """
+    import socket as _socket
+    base = proxy_server["base"]
+    host = base.split("//")[1].rsplit(":", 1)[0]
+    port = int(base.rsplit(":", 1)[1])
+    # Seed a couple of request rows first.
+    for i in range(3):
+        proxy.record_request("POST", "/v1/chat/completions", 200, 0.2, 1.0,
+                             "pytest", "mobin", 10 + i, 5)
+    import sqlite3 as _sq
+    _c = _sq.connect(proxy_server["db"]); _c.row_factory = _sq.Row
+    max_id = max(r["id"] for r in _c.execute("SELECT id FROM requests").fetchall())
+    _c.close()
+
+    def read_sse(after, seconds=2.0):
+        s = _socket.create_connection((host, port), timeout=5)
+        rows = []
+        try:
+            s.sendall(
+                f"GET /__api/events?after={after} HTTP/1.1\r\nHost: test\r\n"
+                f"Authorization: Bearer {TEST_ADMIN_KEY}\r\n"
+                f"Connection: close\r\n\r\n".encode()
+            )
+            buf = b""
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                s.settimeout(0.4)
+                try:
+                    chunk = s.recv(4096)
+                except _socket.timeout:
+                    break  # nothing new pushed: the resume point held
+                except _socket.error:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+            for line in buf.split(b"\n"):
+                if line.startswith(b"data: "):
+                    rows.append(json.loads(line[6:]))
+        finally:
+            s.close()
+        return rows
+
+    # Resuming from the newest id yields no replayed rows.
+    assert read_sse(max_id) == []
+    # A fresh stream (after=0) MUST replay the full history.
+    fresh = read_sse(0, seconds=2.0)
+    assert len(fresh) == 3
+    assert fresh[0]["id"] <= max_id
+
+
 def test_forwards_request_verbatim(proxy_server, upstream):
     base = proxy_server["base"]
     marker = "custom-ua"

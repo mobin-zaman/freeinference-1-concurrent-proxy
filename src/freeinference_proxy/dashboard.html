@@ -624,6 +624,7 @@ let seen = new Set();
 function prependRow(r) {
   if (seen.has(r.id)) return;
   seen.add(r.id);
+  window._maxSeenId = Math.max(window._maxSeenId || 0, r.id); // resume SSE later from here
   if (seen.size > 400) {
     const first = seen.values().next().value;
     seen.delete(first);
@@ -868,7 +869,12 @@ $('key-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('key
 
 setRange('today');
 
-connect();
+// Open the SSE stream only after the initial load resolves so it resumes
+// from the newest row (window._maxSeenId) instead of replaying the whole
+// history (after=0). Full replay = seconds-long lockup on mobile + O(n^2)
+// DOM/stats work + double-counted token totals; the server streams every
+// row ever recorded before any live data on its own if we don't gate here.
+load().then(() => connect(window._maxSeenId || 0));
 </script>
 </body>
 </html>

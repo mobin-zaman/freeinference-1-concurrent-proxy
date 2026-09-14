@@ -286,6 +286,19 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # silence stderr; we log structured JSON
         pass
 
+    def handle(self):
+        # Clients (proxies, aborted browser fetches) routinely close the
+        # keep-alive connection mid-read, which makes BaseHTTPRequestHandler's
+        # built-in handle_one_request raise ConnectionResetError. That is a
+        # normal HTTP/1.1 lifecycle event, not a fault: catch it here so the
+        # request thread exits cleanly instead of dumping a traceback and
+        # churning socket threads. TimeoutError (slow/abandoned client) is
+        # likewise benign.
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, TimeoutError, ValueError):
+            self.close_connection = True
+
     def _reply_json(self, status: int, payload: dict, retry_after: int = 5) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
@@ -552,15 +565,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()  # push handshake immediately so proxies/browsers connect now
         try:
             while True:
-                with _db_lock:
-                    conn = _db()
-                    try:
-                        rows = conn.execute(
-                            "SELECT id, at, ts, method, path, status, waited_s, dur_s, user_agent,"
-                            " key_name, input_tokens, output_tokens"
-                            " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
-                    finally:
-                        conn.close()
+                try:
+                    with _db_lock:
+                        conn = _db()
+                        try:
+                            rows = conn.execute(
+                                "SELECT id, at, ts, method, path, status, waited_s, dur_s, user_agent,"
+                                " key_name, input_tokens, output_tokens"
+                                " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
+                        finally:
+                            conn.close()
+                except (sqlite3.Error, OSError):
+                    return  # DB unreadable/removed: end the stream, don't spin a thread or spam stderr
                 if rows:
                     for r in rows:
                         last_id = max(last_id, r["id"])
