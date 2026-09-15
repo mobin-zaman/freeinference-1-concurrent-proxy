@@ -427,6 +427,32 @@ def test_queue_wait_is_recorded(proxy_server, upstream):
     assert all(r["status"] == 200 for r in rows)
 
 
+def test_duration_excludes_queue_wait(proxy_server, upstream):
+    """dur_s is the upstream round-trip, not total wall time (no queue in it)."""
+    base = proxy_server["base"]
+    upstream.state.hold_s = 0.5   # each upstream request takes ~0.5s
+    upstream.state.hold_event.set()
+
+    results = []
+    def fire(url):
+        results.append(requests.get(f"{base}{url}", headers=auth(), timeout=30).status_code)
+    threads = [threading.Thread(target=fire, args=(u,)) for u in ("/a", "/b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    rows = wait_for_rows(proxy_server["db"], 2)
+    assert all(r["status"] == 200 for r in rows)
+    queued = [r for r in rows if r["waited_s"] > 0]
+    assert queued, "expected at least one request that waited in the queue"
+    # A queued request's dur_s must measure only the upstream hold (~0.5s),
+    # never the extra ~0.5s it sat in the queue.
+    for r in queued:
+        assert r["dur_s"] < 2.0 * upstream.state.hold_s, (
+            f"dur_s={r['dur_s']} must not include queue wait (waited_s={r['waited_s']})")
+
+
 def test_gate_timeout_returns_429(monkeypatch, proxy_server, upstream):
     """A caller that waits past ACQUIRE_TIMEOUT gets a local 429, nothing upstream."""
     monkeypatch.setattr(proxy, "ACQUIRE_TIMEOUT", 1)  # give up after 1s

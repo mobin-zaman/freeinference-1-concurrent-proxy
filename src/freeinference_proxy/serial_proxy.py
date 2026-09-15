@@ -759,7 +759,7 @@ class Handler(BaseHTTPRequestHandler):
                     "limit": limit, "path": self.path,
                 }))
                 record_request(self.command, self.path, 429,
-                               waited_s, round(time.monotonic() - t0, 3),
+                               waited_s, 0.0,
                                fwd_headers.get("User-Agent", ""), key_name)
                 self._reply_json(429, {
                     "error": {
@@ -770,6 +770,7 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
             try:
+                t_api = time.monotonic()  # upstream-only timer: excludes gate queue wait
                 attempts = 1 + UPSTREAM_429_RETRIES  # first try + bounded retries
                 for attempt in range(attempts):
                     upstream = requests.request(
@@ -801,7 +802,7 @@ class Handler(BaseHTTPRequestHandler):
                     "path": self.path, "error": str(exc)[:300],
                 }))
                 record_request(self.command, self.path, 502,
-                               waited_s, round(time.monotonic() - t0, 3),
+                               waited_s, round(time.monotonic() - t_api, 3),
                                fwd_headers.get("User-Agent", ""), key_name)
                 self._reply_json(502, {
                     "error": {
@@ -853,12 +854,12 @@ class Handler(BaseHTTPRequestHandler):
             log(json.dumps({
                 "event": "request", "method": self.command, "path": self.path,
                 "status": upstream.status_code, "waited_s": waited_s,
-                "dur_s": round(time.monotonic() - t0, 3),
+                "dur_s": round(time.monotonic() - t_api, 3),
                 "user_agent": ua, "key_name": key_name,
                 "input_tokens": in_tok, "output_tokens": out_tok,
             }))
             record_request(self.command, self.path, upstream.status_code,
-                           waited_s, round(time.monotonic() - t0, 3), ua,
+                           waited_s, round(time.monotonic() - t_api, 3), ua,
                            key_name, in_tok, out_tok)
         finally:
             _gate.release()
