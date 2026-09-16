@@ -66,8 +66,11 @@ def _parse_retry_after(value: str):
 
 # Authorization enforced since the proxy can be exposed beyond localhost.
 # secrets live in the environment, never in source:
-#   FIF_AUTH_KEY_MOBIN          -> the "mobin" role key (sent as Bearer)
-#   FIF_AUTH_KEY_NIRJHOR        -> the "nirjhor" role key
+#   FIF_AUTH_KEYS               -> "label=key" pairs, newline- or comma-separated.
+#                                  Pick any labels you like; nothing personal is
+#                                  baked into this repo.
+#   FIF_AUTH_KEY_MOBIN          -> legacy aliases for a single LLM role key
+#   FIF_AUTH_KEY_NIRJHOR        ->   (deprecated; kept for backward compat)
 #   FIF_AUTH_ADMIN_KEY          -> admin key for /__dashboard and /__api/*
 #   FREEINFERENCE_API_KEY       -> also accepted so the current Hermes provider
 #                                  (which already injects this Bearer key) keeps
@@ -724,7 +727,7 @@ class Handler(BaseHTTPRequestHandler):
         fwd_headers["Host"] = "freeinference.org"
         # The proxy owns the upstream credential: it authenticates the client
         # with a proxy-scoped key and injects the REAL upstream key here, so
-        # nobody with a mobin/nirjhor key ever sees or spoofs the upstream secret.
+        # no proxy key holder ever sees or spoofs the upstream secret.
         fwd_headers["Authorization"] = f"Bearer {_UPSTREAM_KEY}" if _UPSTREAM_KEY \
             else "Bearer placeholder"
         # Preserve the client's User-Agent exactly. No spoofing or fallback.
@@ -879,8 +882,9 @@ def main() -> None:
 
     # --- Credentials from the environment (never in source / args). ---------
     # A proxy key set is required once the proxy is reachable off-loopback.
-    mobin = os.environ.get("FIF_AUTH_KEY_MOBIN", "").strip()
-    nirjhor = os.environ.get("FIF_AUTH_KEY_NIRJHOR", "").strip()
+    # FIF_AUTH_KEYS: "label=key" pairs (newline- or comma-separated). You name
+    # the labels. The legacy FIF_AUTH_KEY_MOBIN / FIF_AUTH_KEY_NIRJHOR vars are
+    # still read so older setups keep working unchanged.
     admin = os.environ.get("FIF_AUTH_ADMIN_KEY", "").strip()
     upstream_key = os.environ.get("FIF_UPSTREAM_KEY", "").strip() \
         or os.environ.get("FREEINFERENCE_API_KEY", "").strip()
@@ -908,11 +912,27 @@ def main() -> None:
 
     # Seed the env-defined LLM keys into the DB (idempotent) so they show up in
     # the dashboard as managed keys. They are still usable regardless.
-    seed = {}
-    if mobin:
-        seed[mobin] = "mobin"
-    if nirjhor:
-        seed[nirjhor] = "nirjhor"
+    seed: "dict[str, str]" = {}
+
+    def _add(raw: str, label: str) -> None:
+        if raw:
+            seed[raw] = label
+
+    # Primary: FIF_AUTH_KEYS = "label=key" pairs, newline- or comma-separated.
+    for item in os.environ.get("FIF_AUTH_KEYS", "").replace(",", "\n").splitlines():
+        item = item.strip()
+        if not item:
+            continue
+        if "=" in item:
+            label, raw = item.split("=", 1)
+            _add(raw.strip(), label.strip())
+        else:
+            _add(item, "key")
+
+    # Legacy single-key aliases still work unchanged.
+    _add(os.environ.get("FIF_AUTH_KEY_MOBIN", "").strip(), "key1")
+    _add(os.environ.get("FIF_AUTH_KEY_NIRJHOR", "").strip(), "key2")
+
     with _db_lock:
         conn = _db()
         try:

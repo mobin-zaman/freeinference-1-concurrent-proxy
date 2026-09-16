@@ -19,7 +19,7 @@ A local reverse proxy that caps FreeInference at one in-flight upstream request 
 - **Real-time dashboard.** A single self-contained HTML page shows request activity over Server-Sent Events (no polling, no client build step), with input/output token counts, Today/7 days/All-time filtering, and a light/dark theme toggle.
 - **Token usage captured.** For chat completions, `usage.prompt_tokens` and `usage.completion_tokens` are read from the upstream response (streaming and non-streaming) and stored per request.
 - **Queue metrics.** The dashboard shows queue hits and average queue time, so you can see how often and how long requests waited behind the gate.
-- **API-key authentication.** Since the proxy may be exposed beyond localhost, every proxied request requires a valid bearer key from the environment (`FIF_AUTH_KEY_MOBIN`, `FIF_AUTH_KEY_NIRJHOR`), verified in constant time. The dashboard and stats API require a separate admin key (`FIF_AUTH_ADMIN_KEY`). The proxy injects the real upstream credential (`FIF_UPSTREAM_KEY` or `FREEINFERENCE_API_KEY`) itself, so no caller ever sees it.
+- **API-key authentication.** Since the proxy may be exposed beyond localhost, every proxied request requires a valid bearer key from the environment (`FIF_AUTH_KEYS` — a `label=key` list, or the legacy `FIF_AUTH_KEY1`/`FIF_AUTH_KEY2` vars), verified in constant time. The dashboard and stats API require a separate admin key (`FIF_AUTH_ADMIN_KEY`). The proxy injects the real upstream credential (`FIF_UPSTREAM_KEY` or `FREEINFERENCE_API_KEY`) itself, so no caller ever sees it.
 - **Hard 1-concurrent gate.** A global semaphore holds upstream concurrency at exactly 1 — a hard invariant under any amount of contention, verified under a 20-way parallel stress test.
 - **Real User-Agent passthrough.** The client's User-Agent is forwarded verbatim; it is never overwritten or spoofed.
 - **Honest queues.** Every request is written to SQLite with its queue-wait and duration, so you can see what waited and why.
@@ -112,16 +112,16 @@ This forwards only `/__dashboard` and its `/__api/requests` fetch. The raw proxy
 Once the proxy is reachable beyond loopback (via the bridge, a tunnel, etc.) it **requires API-key auth** — there is no open mode off-localhost. Keys come from the environment, never the repo or CLI.
 
 ```bash
-export FIF_AUTH_KEY_MOBIN='<mobin bearer key>'
-export FIF_AUTH_KEY_NIRJHOR='<nirjhor bearer key>'
+export FIF_AUTH_KEYS='bob=<bob bearer key>
+alice=<alice bearer key>'
 export FIF_AUTH_ADMIN_KEY='<admin key for dashboard & /__api>'
 export FIF_UPSTREAM_KEY='<real freeinference.org key>'
 freeinference-serial-proxy
 ```
 
-- Any HOLD of `FIF_AUTH_KEY_MOBIN` / `FIF_AUTH_KEY_NIRJHOR` proxies LLM requests (the key's role is just a label for you).
+- `FIF_AUTH_KEYS` is a newline- or comma-separated list of `label=key` pairs; **you choose the labels**. Any holder of one of those keys proxies LLM requests. (The legacy single-key vars `FIF_AUTH_KEY_MOBIN` / `FIF_AUTH_KEY_NIRJHOR` are still read if you prefer them, but they are deprecated and not documented here.)
 - If `FIF_UPSTREAM_KEY` is unset the proxy falls back to `FREEINFERENCE_API_KEY`, so an existing Hermes provider (which already injects that key) keeps working with no config change.
-- The proxy injects `Authorization: Bearer $FIF_UPSTREAM_KEY` upstream itself and never forwards a client's key, so a mobin/nirjhor holder never learns or spoofs the upstream credential.
+- The proxy injects `Authorization: Bearer $FIF_UPSTREAM_KEY` upstream itself and never forwards a client's key, so a proxy-key holder never learns or spoofs the upstream credential.
 - `/__dashboard` and `/__api/*` require `FIF_AUTH_ADMIN_KEY`, not an LLM key.
 - From the dashboard (with the admin key) you can **create, enable, and disable API keys** at runtime — the changes persist to SQLite and take effect immediately, no restart. Created keys are stored as a SHA-256 hash (plaintext is shown once at creation). Every request records **which key** was used, shown in a `Key` column on the dashboard.
 - Client `Authorization` (the proxy key) is never leaked upstream; the client's `User-Agent` is always forwarded verbatim, never spoofed.

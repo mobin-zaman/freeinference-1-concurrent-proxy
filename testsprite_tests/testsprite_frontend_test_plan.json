@@ -1,0 +1,354 @@
+[
+  {
+    "id": "TC001",
+    "title": "Dashboard home renders the operations console",
+    "description": "Visiting the dashboard shows the FreeInference Proxy operations console with its main layout and monitoring sections.",
+    "category": "Dashboard Home",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the dashboard title is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the main dashboard layout is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the request monitoring sections are visible"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC002",
+    "title": "Load the dashboard home successfully",
+    "description": "Visiting the dashboard home shows the FreeInference Proxy operations console with its main layout ready for monitoring.",
+    "category": "FreeInference Proxy",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the dashboard title is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the total requests metric is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the recent requests table is visible"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC003",
+    "title": "Live request updates appear without refreshing the dashboard",
+    "description": "Keeping the dashboard open shows newly proxied requests appearing in the recent requests table without requiring a page refresh.",
+    "category": "Recent Requests Table",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Wait for a new proxied request to arrive"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify a new request appears in the recent requests table"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the dashboard remains loaded without a page refresh"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC004",
+    "title": "Total requests metric is visible",
+    "description": "Visiting the dashboard shows an aggregate total requests metric for operational monitoring.",
+    "category": "Request Statistics",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the total requests metric is displayed"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC005",
+    "title": "See live request updates without reloading",
+    "description": "Keeping the dashboard open allows new proxied requests to appear in the recent requests table without a page refresh.",
+    "category": "Live Request Updates",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the recent requests table is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify new request entries appear in the recent requests table without reloading"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC006",
+    "title": "Recent requests table displays request details",
+    "description": "Visiting the dashboard shows recent proxied requests with method, path, status, and latency details.",
+    "category": "Recent Requests Table",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the recent requests table is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify recent requests are shown with method, path, status, and latency details"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC007",
+    "title": "Inspect recent proxied requests in the table",
+    "description": "The recent requests table shows proxied request details so an operator can review method, path, status, and latency at a glance.",
+    "category": "FreeInference Proxy",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /__api/requests"
+      },
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify recent proxied requests are displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify request method, path, status, and latency details are visible"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC008",
+    "title": "Recent request history loads in the API response view",
+    "description": "Opening the requests API view shows recent proxied request data that can be inspected for method, path, status, and latency values.",
+    "category": "Recent Requests Table",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /__api/requests"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify recent request data is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify each request includes method, path, status, and latency information"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC009",
+    "title": "Show aggregate request counts on the dashboard",
+    "description": "The dashboard presents aggregate request activity so an operator can quickly gauge proxy volume.",
+    "category": "FreeInference Proxy",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the total requests metric is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify aggregate request counts are visible"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC010",
+    "title": "Render request table data from the requests history endpoint",
+    "description": "The dashboard can display the recent request history coming from the requests data source in the expected table format.",
+    "category": "FreeInference Proxy",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /__api/requests"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify recent proxied requests are displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify request details are visible in the table"
+      }
+    ],
+    "priority": "High"
+  },
+  {
+    "id": "TC011",
+    "title": "Dashboard shows the API keys section",
+    "description": "Visiting the dashboard shows the configured API keys section for operator review.",
+    "category": "Dashboard Home",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the API keys section is displayed"
+      }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC012",
+    "title": "View the API keys section on the dashboard",
+    "description": "Opening the dashboard displays the configured API keys section as part of the read-only operations console.",
+    "category": "API Keys Section",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the API keys section is visible"
+      }
+    ],
+    "priority": "Medium"
+  },
+  {
+    "id": "TC013",
+    "title": "Empty request history still shows the dashboard layout",
+    "description": "When there is little or no request history, the dashboard still shows its overall layout and metrics with an empty-state message for recent requests.",
+    "category": "Recent Requests Table",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the dashboard layout is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the total requests metric is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify an empty state message for recent requests is visible"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC014",
+    "title": "Handle an empty request history gracefully",
+    "description": "When request history is empty or minimal, the dashboard still shows the overall layout and a clear empty-state experience.",
+    "category": "FreeInference Proxy",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /__api/requests"
+      },
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the dashboard title is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the total requests metric is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify an empty state message is visible"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC015",
+    "title": "Malformed request data is handled gracefully",
+    "description": "If recent request data contains malformed entries, the dashboard still renders and shows only a clear validation or fallback state instead of breaking the page.",
+    "category": "Recent Requests Table",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /__api/requests"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the requests view remains readable"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify malformed request entries are handled with a fallback or validation state"
+      }
+    ],
+    "priority": "Low"
+  },
+  {
+    "id": "TC016",
+    "title": "Keep the dashboard read-only",
+    "description": "The operations console presents monitoring information without exposing login or edit actions.",
+    "category": "FreeInference Proxy",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the dashboard is read-only"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify no account login flow is shown"
+      }
+    ],
+    "priority": "Low"
+  }
+]

@@ -22,13 +22,13 @@ import freeinference_proxy.serial_proxy as proxy
 # ---------------------------------------------------------------------------
 # Test auth keys
 # ---------------------------------------------------------------------------
-TEST_MOBIN_KEY = "test-mobin-key-0123456789"          # 32+ chars
-TEST_NIRJHOR_KEY = "test-nirjhor-key-9876543210"
+TEST_ALICE_KEY = "test-alice-key-0123456789"          # 32+ chars
+TEST_BOB_KEY = "test-bob-key-9876543210"
 TEST_WRONG_KEY = "test-wrong-key-0000"
 TEST_ADMIN_KEY = "test-admin-key-000000000000"
 
 
-def auth(name=TEST_MOBIN_KEY):
+def auth(name=TEST_ALICE_KEY):
     return {"Authorization": f"Bearer {name}"}
 
 
@@ -178,7 +178,7 @@ def proxy_server(monkeypatch, tmp_path, upstream):
     with proxy._db_lock:
         conn = proxy._db()
         try:
-            for raw, name in ((TEST_MOBIN_KEY, "mobin"), (TEST_NIRJHOR_KEY, "nirjhor")):
+            for raw, name in ((TEST_ALICE_KEY, "trent"), (TEST_BOB_KEY, "wanda")):
                 try:
                     conn.execute(
                         "INSERT INTO api_keys (name, key_hash, role, enabled, created_at)"
@@ -303,7 +303,7 @@ def test_events_resume_after_replays_nothing(proxy_server):
     # Seed a couple of request rows first.
     for i in range(3):
         proxy.record_request("POST", "/v1/chat/completions", 200, 0.2, 1.0,
-                             "pytest", "mobin", 10 + i, 5)
+                             "pytest", "trent", 10 + i, 5)
     import sqlite3 as _sq
     _c = _sq.connect(proxy_server["db"]); _c.row_factory = _sq.Row
     max_id = max(r["id"] for r in _c.execute("SELECT id FROM requests").fetchall())
@@ -594,12 +594,12 @@ def test_proxy_rejects_bare_key_in_query(proxy_server, upstream):
     """The key must come in a header, not the URL query string (no leakage into logs)."""
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    r = requests.get(f"{base}/v1/models", params={"api_key": TEST_MOBIN_KEY}, timeout=10)
+    r = requests.get(f"{base}/v1/models", params={"api_key": TEST_ALICE_KEY}, timeout=10)
     assert r.status_code == 401
     assert upstream.state.received == []
 
 
-@pytest.mark.parametrize("key", [TEST_MOBIN_KEY, TEST_NIRJHOR_KEY])
+@pytest.mark.parametrize("key", [TEST_ALICE_KEY, TEST_BOB_KEY])
 def test_proxy_accepts_valid_keys(proxy_server, upstream, key):
     """Both role keys authenticate a proxied LLM request."""
     base = proxy_server["base"]
@@ -613,7 +613,7 @@ def test_proxy_accepts_x_api_key_header(proxy_server, upstream):
     """`X-Api-Key` header works as an alternative to Bearer Authorization."""
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    r = requests.get(f"{base}/v1/models", headers={"X-Api-Key": TEST_MOBIN_KEY}, timeout=10)
+    r = requests.get(f"{base}/v1/models", headers={"X-Api-Key": TEST_ALICE_KEY}, timeout=10)
     assert r.status_code == 200
 
 
@@ -632,7 +632,7 @@ def test_proxy_normalizes_bearer_case(proxy_server, upstream):
     upstream.state.hold_event.set()
     r = requests.get(
         f"{base}/v1/models",
-        headers={"Authorization": f"bearer {TEST_MOBIN_KEY}"}, timeout=10)
+        headers={"Authorization": f"bearer {TEST_ALICE_KEY}"}, timeout=10)
     assert r.status_code == 200
 
 
@@ -641,19 +641,19 @@ def test_proxy_does_not_forward_local_api_key_upstream(proxy_server, upstream):
     injects the REAL upstream credential (FIF_UPSTREAM_KEY)."""
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/models", headers=auth(TEST_MOBIN_KEY), timeout=10)
+    requests.get(f"{base}/v1/models", headers=auth(TEST_ALICE_KEY), timeout=10)
     recv = upstream.state.received[0]
     authz = recv["headers"].get("Authorization", "")
     # the upstream saw the injected upstream credential, never the client's key
     assert authz == "Bearer local-hermes-upstream-key"
-    assert TEST_MOBIN_KEY not in authz
+    assert TEST_ALICE_KEY not in authz
 
 
 def test_admin_endpoints_require_admin_key(proxy_server, upstream):
     """Dashboard and stats API reject a valid LLM key; they need the admin key."""
     base = proxy_server["base"]
     for path in ("/__dashboard", "/__api/requests?limit=5", "/__api/events"):
-        r = requests.get(f"{base}{path}", headers=auth(TEST_MOBIN_KEY), timeout=10)
+        r = requests.get(f"{base}{path}", headers=auth(TEST_ALICE_KEY), timeout=10)
         assert r.status_code == 401, f"{path} should reject a non-admin key"
     # the admin key works (dashboard + requests already asserted elsewhere)
     r = requests.get(f"{base}/__dashboard", headers=auth(TEST_ADMIN_KEY), timeout=10)
@@ -890,9 +890,9 @@ def test_daily_input_limit_rejects_bad_values(proxy_server, upstream):
 def test_request_records_key_name(proxy_server, upstream):
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/models", headers=auth(TEST_MOBIN_KEY), timeout=10)
+    requests.get(f"{base}/v1/models", headers=auth(TEST_ALICE_KEY), timeout=10)
     rows = wait_for_rows(proxy_server["db"], 1)
-    assert rows[0]["key_name"] == "mobin"
+    assert rows[0]["key_name"] == "trent"
 
 
 def test_request_records_created_key_name(proxy_server, upstream):
@@ -915,10 +915,10 @@ def test_request_records_hermes_key_name(proxy_server, upstream):
 def test_api_includes_key_name(proxy_server, upstream):
     base = proxy_server["base"]
     upstream.state.hold_event.set()
-    requests.get(f"{base}/v1/models", headers=auth(TEST_NIRJHOR_KEY), timeout=10)
+    requests.get(f"{base}/v1/models", headers=auth(TEST_BOB_KEY), timeout=10)
     wait_for_rows(proxy_server["db"], 1)
     body = requests.get(f"{base}/__api/requests?limit=5", headers=_admin(base), timeout=10).json()
-    assert body["requests"][0]["key_name"] == "nirjhor"
+    assert body["requests"][0]["key_name"] == "wanda"
 
 
 # ---------------------------------------------------------------------------

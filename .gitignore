@@ -10,3 +10,11 @@ build/
 dist/
 .venv/
 venv/
+testsprite_tests/tmp/
+testsprite_tests/tmp/config.json
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# internal agent orchestration docs (OMH specs/plans) — not part of the project.
+/.omh/
