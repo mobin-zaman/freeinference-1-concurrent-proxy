@@ -119,7 +119,7 @@ export FIF_UPSTREAM_KEY='<real freeinference.org key>'
 freeinference-serial-proxy
 ```
 
-- `FIF_AUTH_KEYS` is a newline- or comma-separated list of `label=key` pairs; **you choose the labels**. Any holder of one of those keys proxies LLM requests. (The legacy single-key vars `FIF_AUTH_KEY_MOBIN` / `FIF_AUTH_KEY_NIRJHOR` are still read if you prefer them, but they are deprecated and not documented here.)
+- `FIF_AUTH_KEYS` is a newline- or comma-separated list of `label=key` pairs; **you choose the labels**. Any holder of one of those keys proxies LLM requests. (A couple of single-key legacy env vars remain accepted for backward compatibility, but the `FIF_AUTH_KEYS` form is the documented one.)
 - If `FIF_UPSTREAM_KEY` is unset the proxy falls back to `FREEINFERENCE_API_KEY`, so an existing Hermes provider (which already injects that key) keeps working with no config change.
 - The proxy injects `Authorization: Bearer $FIF_UPSTREAM_KEY` upstream itself and never forwards a client's key, so a proxy-key holder never learns or spoofs the upstream credential.
 - `/__dashboard` and `/__api/*` require `FIF_AUTH_ADMIN_KEY`, not an LLM key.
