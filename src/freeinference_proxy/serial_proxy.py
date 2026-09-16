@@ -69,8 +69,7 @@ def _parse_retry_after(value: str):
 #   FIF_AUTH_KEYS               -> "label=key" pairs, newline- or comma-separated.
 #                                  Pick any labels you like; nothing personal is
 #                                  baked into this repo.
-#   FIF_AUTH_KEY_MOBIN          -> legacy aliases for a single LLM role key
-#   FIF_AUTH_KEY_NIRJHOR        ->   (deprecated; kept for backward compat)
+#   FIF_AUTH_KEY1, FIF_AUTH_KEY2 -> optional extra single keys (plain bearer keys)
 #   FIF_AUTH_ADMIN_KEY          -> admin key for /__dashboard and /__api/*
 #   FREEINFERENCE_API_KEY       -> also accepted so the current Hermes provider
 #                                  (which already injects this Bearer key) keeps
@@ -883,8 +882,7 @@ def main() -> None:
     # --- Credentials from the environment (never in source / args). ---------
     # A proxy key set is required once the proxy is reachable off-loopback.
     # FIF_AUTH_KEYS: "label=key" pairs (newline- or comma-separated). You name
-    # the labels. The legacy FIF_AUTH_KEY_MOBIN / FIF_AUTH_KEY_NIRJHOR vars are
-    # still read so older setups keep working unchanged.
+    # the labels. FIF_AUTH_KEY1 / FIF_AUTH_KEY2 take a single plain key each.
     admin = os.environ.get("FIF_AUTH_ADMIN_KEY", "").strip()
     upstream_key = os.environ.get("FIF_UPSTREAM_KEY", "").strip() \
         or os.environ.get("FREEINFERENCE_API_KEY", "").strip()
@@ -929,9 +927,9 @@ def main() -> None:
         else:
             _add(item, "key")
 
-    # Legacy single-key aliases still work unchanged.
-    _add(os.environ.get("FIF_AUTH_KEY_MOBIN", "").strip(), "key1")
-    _add(os.environ.get("FIF_AUTH_KEY_NIRJHOR", "").strip(), "key2")
+    # Optional extra single keys.
+    _add(os.environ.get("FIF_AUTH_KEY1", "").strip(), "key1")
+    _add(os.environ.get("FIF_AUTH_KEY2", "").strip(), "key2")
 
     with _db_lock:
         conn = _db()
