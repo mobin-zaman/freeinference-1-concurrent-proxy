@@ -185,6 +185,14 @@
     max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   td.modelc { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-totals td { background: transparent; }
+  .model-totals .model-chip { font-weight: 600; }
+  .model-user td {
+    background: rgba(154,123,255,0.04); font-size: 11px; color: var(--muted);
+    padding-top: 3px; padding-bottom: 3px;
+  }
+  .user-indent { padding-left: 34px !important; color: var(--fg); }
+  .user-indent::before { content: "↳ "; color: var(--muted); margin-right: 4px; }
   .key-none { color: var(--muted); opacity: .6; }
   td.path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.path .q { color: var(--muted); }
@@ -670,13 +678,26 @@ function renderModels(perModel) {
   const rows = perModel || [];
   if (!rows.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
-  $('model-rows').innerHTML = rows.map(m => `
-    <tr>
-      <td class="mono modelc"><span class="model-chip" title="${esc(m.model)}">${esc(m.model)}</span></td>
-      <td class="num">${(m.requests || 0).toLocaleString()}</td>
-      <td class="num tok">${fmtTok(m.input_tokens || 0)}</td>
-      <td class="num tok">${fmtTok(m.output_tokens || 0)}</td>
-    </tr>`).join('');
+  // Each model is a row with its totals; below it, indented per-user sub-rows
+  // giving the breakdown by key. A single tbody keeps the table compact.
+  $('model-rows').innerHTML = rows.map(m => {
+    const users = (m.users || [])
+      .map(u => `
+        <tr class="model-user">
+          <td class="user-indent">${esc(u.key_name)}</td>
+          <td class="num">${(u.requests || 0).toLocaleString()}</td>
+          <td class="num tok">${fmtTok(u.input_tokens || 0)}</td>
+          <td class="num tok">${fmtTok(u.output_tokens || 0)}</td>
+        </tr>`).join('');
+    return `
+      <tr class="model-totals">
+        <td class="mono modelc"><span class="model-chip" title="${esc(m.model)}">${esc(m.model)}</span></td>
+        <td class="num">${(m.requests || 0).toLocaleString()}</td>
+        <td class="num tok">${fmtTok(m.input_tokens || 0)}</td>
+        <td class="num tok">${fmtTok(m.output_tokens || 0)}</td>
+      </tr>
+      ${users}`;
+  }).join('');
 }
 
 // ---- Realtime: SSE pushes new request rows as they land ----
@@ -709,12 +730,18 @@ function prependRow(r) {
   // Keep the stat-card token totals alive across realtime adds (never zero them).
   _inTok += r.input_tokens || 0;
   _outTok += r.output_tokens || 0;
-  // Bump the per-model table in realtime: merge this row into the existing aggregate.
+  // Bump the per-model table in realtime: merge this row into the existing aggregate
+  // (both the model totals and its per-user sub-row).
   const pm = _perModel;
   if (r.model) {
     let e = pm.find(m => m.model === r.model);
-    if (!e) { e = { model: r.model, requests: 0, input_tokens: 0, output_tokens: 0 }; pm.push(e); }
+    if (!e) { e = { model: r.model, requests: 0, input_tokens: 0, output_tokens: 0, users: [] }; pm.push(e); }
     e.requests += 1; e.input_tokens += r.input_tokens || 0; e.output_tokens += r.output_tokens || 0;
+    const k = r.key_name || '<unkeyed>';
+    let u = e.users.find(x => x.key_name === k);
+    if (!u) { u = { key_name: k, requests: 0, input_tokens: 0, output_tokens: 0 }; e.users.push(u); }
+    u.requests += 1; u.input_tokens += r.input_tokens || 0; u.output_tokens += r.output_tokens || 0;
+    e.users.sort((a, b) => b.requests - a.requests);
     renderModels(pm);
   }
   updateStats(

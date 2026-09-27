@@ -718,16 +718,30 @@ class Handler(BaseHTTPRequestHandler):
                 avgq = conn.execute(
                     "SELECT COALESCE(AVG(waited_s),0) FROM requests"
                     f" {where}", params).fetchone()[0]
-                # Per-model aggregate over the same window/filter: requests,
-                # input tokens, output tokens per model.
+                # Per-model aggregate over the same window/filter: for each model,
+                # a per-user (key) breakdown plus the model totals.
                 mwhere = (where + " AND model != ''") if where else "WHERE model != ''"
-                per_model = [
-                    {"model": r["model"], "requests": int(r["n"]),
-                     "input_tokens": int(r["it"]), "output_tokens": int(r["ot"])}
-                    for r in conn.execute(
-                        "SELECT model, COUNT(*) AS n, COALESCE(SUM(input_tokens),0) AS it,"
+                model_map = {}  # model -> {requests, input_tokens, output_tokens, users:[...]}
+                for r in conn.execute(
+                        "SELECT model, key_name, COUNT(*) AS n,"
+                        " COALESCE(SUM(input_tokens),0) AS it,"
                         " COALESCE(SUM(output_tokens),0) AS ot"
-                        f" FROM requests {mwhere} GROUP BY model", params).fetchall()]
+                        f" FROM requests {mwhere} GROUP BY model, key_name", params):
+                    m = model_map.setdefault(r["model"], {
+                        "model": r["model"], "requests": 0, "input_tokens": 0,
+                        "output_tokens": 0, "users": [],
+                    })
+                    m["requests"] += int(r["n"])
+                    m["input_tokens"] += int(r["it"])
+                    m["output_tokens"] += int(r["ot"])
+                    key = r["key_name"] or "<unkeyed>"
+                    m["users"].append({
+                        "key_name": key, "requests": int(r["n"]),
+                        "input_tokens": int(r["it"]), "output_tokens": int(r["ot"]),
+                    })
+                for m in model_map.values():
+                    m["users"].sort(key=lambda u: -u["requests"])
+                per_model = sorted(model_map.values(), key=lambda m: -m["requests"])
                 conn.close()
             self._reply_json(200, {
                 "requests": [dict(r) for r in rows],

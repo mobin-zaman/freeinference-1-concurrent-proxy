@@ -940,6 +940,10 @@ def test_post_model_captured_and_per_model_aggregate(proxy_server, upstream):
     assert body["requests"][0]["model"] == "glm-5.3-flash"
     pm = {m["model"]: m for m in body["per_model"]}
     assert pm["glm-5.3-flash"]["requests"] == 1
+    # per-model breakdown includes the per-user sub-rows keyed by key_name.
+    assert pm["glm-5.3-flash"]["users"] == [
+        {"key_name": "trent", "requests": 1, "input_tokens": 0, "output_tokens": 0}
+    ]
 
     # per-key per-model breakdown from the keys endpoint
     keys = {k["name"]: k for k in requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10).json()["keys"]}
