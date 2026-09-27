@@ -77,6 +77,7 @@ def _parse_retry_after(value: str):
 _KEYS: "dict[str, str]" = {}       # valid LLM secret -> key name (raw keys, enabled only)
 _ADMIN_KEYS: "dict[str, str]" = {}  # valid admin secret -> key name
 _KEY_LIMITS: "dict[str, int]" = {}  # key name -> daily input-token cap (0/absent = unlimited)
+_KEY_BLOCKED_MODELS: "dict[str, set]" = {}  # key name -> model names that key may NOT call
 _UPSTREAM_KEY: str = ""            # real freeinference credential, injected upstream
 _ENV_ADMIN_KEYS: "tuple[str, ...]" = ()  # master admin keys from env, never in DB
 
@@ -128,7 +129,8 @@ def _db() -> sqlite3.Connection:
         " user_agent TEXT NOT NULL,"
         " key_name TEXT NOT NULL DEFAULT '',"
         " input_tokens INTEGER NOT NULL DEFAULT 0,"
-        " output_tokens INTEGER NOT NULL DEFAULT 0)"
+        " output_tokens INTEGER NOT NULL DEFAULT 0,"
+        " model TEXT NOT NULL DEFAULT '')"
     )
     # In-place migration for DBs created before token columns existed.
     cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
@@ -138,6 +140,8 @@ def _db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE requests ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0")
     if "key_name" not in cols:
         conn.execute("ALTER TABLE requests ADD COLUMN key_name TEXT NOT NULL DEFAULT ''")
+    if "model" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN model TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS api_keys ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -154,6 +158,9 @@ def _db() -> sqlite3.Connection:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(api_keys)")}
     if "daily_input_limit" not in cols:
         conn.execute("ALTER TABLE api_keys ADD COLUMN daily_input_limit INTEGER")
+    # Per-key blocked-model list ('' = no restrictions; comma-separated names).
+    if "blocked_models" not in cols:
+        conn.execute("ALTER TABLE api_keys ADD COLUMN blocked_models TEXT NOT NULL DEFAULT ''")
     return conn
 
 
@@ -171,8 +178,8 @@ def _refresh_key_cache() -> None:
 
     Every entry in the caches is the SHA-256 of a key (never a raw key).
     The hot path hashes the presented key and compares hashes in constant time."""
-    global _KEYS, _ADMIN_KEYS, _KEY_LIMITS
-    keys, admins, limits = {}, {}, {}
+    global _KEYS, _ADMIN_KEYS, _KEY_LIMITS, _KEY_BLOCKED_MODELS
+    keys, admins, limits, blocked_models = {}, {}, {}, {}
     # Implicit LLM key: the upstream/FREEINFERENCE credential so the current
     # Hermes provider keeps working; can never be disabled from the dashboard.
     if _UPSTREAM_KEY:
@@ -184,7 +191,7 @@ def _refresh_key_cache() -> None:
         conn = _db()
         try:
             for r in conn.execute(
-                    "SELECT name, key_hash, role, enabled, daily_input_limit"
+                    "SELECT name, key_hash, role, enabled, daily_input_limit, blocked_models"
                     " FROM api_keys WHERE enabled=1"):
                 h = r["key_hash"]  # stored as a SHA-256 already
                 if r["role"] == "admin":
@@ -192,11 +199,15 @@ def _refresh_key_cache() -> None:
                 keys.setdefault(h, r["name"])
                 if r["daily_input_limit"] is not None:
                     limits[r["name"]] = int(r["daily_input_limit"])
+                if r["blocked_models"]:
+                    blocked_models[r["name"]] = {
+                        m.strip() for m in r["blocked_models"].split(",") if m.strip()}
         finally:
             conn.close()
     _KEYS = keys
     _ADMIN_KEYS = admins
     _KEY_LIMITS = limits
+    _KEY_BLOCKED_MODELS = blocked_models
     # Every mutation that changes a cap rebuilds the cache; enforcement reads
     # only the in-memory dict, never the DB, on the hot path.
 
@@ -227,17 +238,17 @@ def _daily_input_used(key_name: str) -> int:
 
 
 def record_request(method, path, status, waited_s, dur_s, ua, key_name="",
-                   input_tokens=0, output_tokens=0) -> None:
+                   input_tokens=0, output_tokens=0, model="") -> None:
     with _db_lock:
         conn = _db()
         try:
             conn.execute(
                 "INSERT INTO requests (at, ts, method, path, status, waited_s, dur_s,"
-                " user_agent, key_name, input_tokens, output_tokens)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " user_agent, key_name, input_tokens, output_tokens, model)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), time.strftime("%Y-%m-%d %H:%M:%S"),
                  method, path, status, waited_s, dur_s, ua, key_name or "",
-                 int(input_tokens or 0), int(output_tokens or 0)),
+                 int(input_tokens or 0), int(output_tokens or 0), model or ""),
             )
             conn.commit()
         finally:
@@ -280,6 +291,24 @@ def parse_usage_tokens(body: bytes) -> tuple[int, int]:
             return (int(usage.get("prompt_tokens") or 0),
                     int(usage.get("completion_tokens") or 0))
     return 0, 0
+
+
+def parse_request_model(body: bytes) -> str:
+    """Extract the model name from an OpenAI-compatible request body.
+
+    Reads `model` from the JSON body; returns '' on any parse failure or for
+    bodies without a model field (GET /v1/models, etc.)."""
+    if not body:
+        return ""
+    try:
+        obj = json.loads(body.decode("utf-8", "replace"))
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return ""
+    if isinstance(obj, dict):
+        m = obj.get("model")
+        if isinstance(m, str):
+            return m[:120]  # ponytail: cap length; model names are short
+    return ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -400,8 +429,17 @@ class Handler(BaseHTTPRequestHandler):
                         return True
                     sets.append("daily_input_limit=?")
                     params.append(lim)
+                if "blocked_models" in body:
+                    bm = body["blocked_models"]
+                    if bm is None:
+                        bm = ""
+                    if not isinstance(bm, str):
+                        self._reply_json(400, {"error": {"message": "blocked_models must be a comma-separated string or null", "code": 400}})
+                        return True
+                    sets.append("blocked_models=?")
+                    params.append(", ".join(m.strip() for m in bm.split(",") if m.strip()))
                 if not sets:
-                    self._reply_json(400, {"error": {"message": "nothing to update (send enabled and/or daily_input_limit)", "code": 400}})
+                    self._reply_json(400, {"error": {"message": "nothing to update (send enabled and/or daily_input_limit and/or blocked_models)", "code": 400}})
                     return True
                 params.append(kid)
                 with _db_lock:
@@ -409,7 +447,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         cur = conn.execute(
                             "UPDATE api_keys SET " + ", ".join(sets) +
-                            " WHERE id=? RETURNING name, role, enabled, daily_input_limit",
+                            " WHERE id=? RETURNING name, role, enabled, daily_input_limit, blocked_models",
                             params)
                         row = cur.fetchone()
                         conn.commit()
@@ -421,7 +459,8 @@ class Handler(BaseHTTPRequestHandler):
                 _refresh_key_cache()
                 self._reply_json(200, {"id": kid, "name": row["name"], "role": row["role"],
                                        "enabled": bool(row["enabled"]),
-                                       "daily_input_limit": row["daily_input_limit"]})
+                                       "daily_input_limit": row["daily_input_limit"],
+                                       "blocked_models": row["blocked_models"]})
                 return True
         # DELETE /__api/keys/<id>  -> 204 (removes the key from the DB + auth cache)
         if self.command == "DELETE":
@@ -517,9 +556,20 @@ class Handler(BaseHTTPRequestHandler):
                             " FROM requests WHERE key_name != ''" + rngclause +
                             " GROUP BY key_name", rngpar):
                         tok[r["key_name"]] = (r["it"], r["ot"])
+                    # Per-key PER-MODEL token breakdown within the same window.
+                    bymodel = {}
+                    for r in conn.execute(
+                            "SELECT key_name, model, COALESCE(SUM(input_tokens),0) AS it,"
+                            " COALESCE(SUM(output_tokens),0) AS ot, COUNT(*) AS n"
+                            " FROM requests WHERE key_name != '' AND model != ''" + rngclause +
+                            " GROUP BY key_name, model", rngpar):
+                        bymodel.setdefault(r["key_name"], []).append({
+                            "model": r["model"], "input_tokens": int(r["it"]),
+                            "output_tokens": int(r["ot"]), "requests": int(r["n"]),
+                        })
                     for r in conn.execute(
                             "SELECT id, name, role, enabled, created_at, last_used_at, key_hash,"
-                            " daily_input_limit FROM api_keys ORDER BY id"):
+                            " daily_input_limit, blocked_models FROM api_keys ORDER BY id"):
                         h = r["key_hash"]
                         it, ot = tok.get(r["name"], (0, 0))
                         rows.append({
@@ -530,6 +580,8 @@ class Handler(BaseHTTPRequestHandler):
                             "masked": "sk-…" + h[-4:],
                             "input_tokens": int(it), "output_tokens": int(ot),
                             "daily_input_limit": r["daily_input_limit"],
+                            "blocked_models": r["blocked_models"] or "",
+                            "models": bymodel.get(r["name"], []),
                         })
                 finally:
                     conn.close()
@@ -573,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             rows = conn.execute(
                                 "SELECT id, at, ts, method, path, status, waited_s, dur_s, user_agent,"
-                                " key_name, input_tokens, output_tokens"
+                                " key_name, input_tokens, output_tokens, model"
                                 " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
                         finally:
                             conn.close()
@@ -589,6 +641,7 @@ class Handler(BaseHTTPRequestHandler):
                             "dur_s": r["dur_s"], "user_agent": r["user_agent"],
                             "key_name": r["key_name"],
                             "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
+                            "model": r["model"],
                         }
                         self.wfile.write(("data: %s\n\n" % json.dumps(payload)).encode())
                     self.wfile.flush()
@@ -654,7 +707,7 @@ class Handler(BaseHTTPRequestHandler):
                 conn = _db()
                 rows = conn.execute(
                     f"SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
-                    f" key_name, input_tokens, output_tokens FROM requests {where}"
+                    f" key_name, input_tokens, output_tokens, model FROM requests {where}"
                     f" ORDER BY id DESC LIMIT ?", params + [limit]).fetchall()
                 total, errs = conn.execute(
                     "SELECT COUNT(*), SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)"
@@ -665,6 +718,16 @@ class Handler(BaseHTTPRequestHandler):
                 avgq = conn.execute(
                     "SELECT COALESCE(AVG(waited_s),0) FROM requests"
                     f" {where}", params).fetchone()[0]
+                # Per-model aggregate over the same window/filter: requests,
+                # input tokens, output tokens per model.
+                mwhere = (where + " AND model != ''") if where else "WHERE model != ''"
+                per_model = [
+                    {"model": r["model"], "requests": int(r["n"]),
+                     "input_tokens": int(r["it"]), "output_tokens": int(r["ot"])}
+                    for r in conn.execute(
+                        "SELECT model, COUNT(*) AS n, COALESCE(SUM(input_tokens),0) AS it,"
+                        " COALESCE(SUM(output_tokens),0) AS ot"
+                        f" FROM requests {mwhere} GROUP BY model", params).fetchall()]
                 conn.close()
             self._reply_json(200, {
                 "requests": [dict(r) for r in rows],
@@ -672,6 +735,7 @@ class Handler(BaseHTTPRequestHandler):
                 "range": rng,
                 "input_tokens": int(tin or 0), "output_tokens": int(tout or 0),
                 "avg_queue_s": round(float(avgq or 0), 3),
+                "per_model": sorted(per_model, key=lambda m: -m["requests"]),
             })
             return True
         if self.path.startswith("/__dashboard"):
@@ -715,6 +779,26 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = 0
         body = self.rfile.read(length) if length else None
+        model = parse_request_model(body) if body else ""
+
+        # Per-key model allowlist: a key with restrictions gets 403 on any
+        # request naming a blocked model (checked before the gate, no queueing).
+        blocked = _KEY_BLOCKED_MODELS.get(key_name)
+        if blocked and model and model in blocked:
+            log(json.dumps({
+                "event": "model_blocked", "key_name": key_name,
+                "model": model, "path": self.path,
+            }))
+            record_request(self.command, self.path, 403,
+                           0.0, 0.0, self.headers.get("User-Agent", ""),
+                           key_name, model=model)
+            self._reply_json(403, {
+                "error": {
+                    "message": f"model '{model}' is not accessible with key '{key_name}'",
+                    "type": "model_not_allowed", "code": 403,
+                }
+            })
+            return
 
         fwd_headers = {}
         for key, value in self.headers.items():
@@ -739,7 +823,7 @@ class Handler(BaseHTTPRequestHandler):
             }))
             record_request(self.command, self.path, 429,
                            ACQUIRE_TIMEOUT, 0, fwd_headers.get("User-Agent", ""),
-                           key_name)
+                           key_name, model=model)
             self._reply_json(429, {
                 "error": {
                     "message": "local freeinference serialization queue timed out",
@@ -762,11 +846,12 @@ class Handler(BaseHTTPRequestHandler):
                 }))
                 record_request(self.command, self.path, 429,
                                waited_s, 0.0,
-                               fwd_headers.get("User-Agent", ""), key_name)
+                               fwd_headers.get("User-Agent", ""), key_name,
+                               model=model)
                 self._reply_json(429, {
                     "error": {
-                        "message": f"daily input-token limit of {limit} reached "
-                                   f"for key '{key_name}'",
+                        "message": f"token exhausted for day — daily limit of "
+                                   f"{limit} reached for key '{key_name}'",
                         "type": "daily_input_limit", "code": 429,
                     }
                 })
@@ -805,7 +890,8 @@ class Handler(BaseHTTPRequestHandler):
                 }))
                 record_request(self.command, self.path, 502,
                                waited_s, round(time.monotonic() - t_api, 3),
-                               fwd_headers.get("User-Agent", ""), key_name)
+                               fwd_headers.get("User-Agent", ""), key_name,
+                               model=model)
                 self._reply_json(502, {
                     "error": {
                         "message": f"upstream connection failed: {exc}"[:300],
@@ -857,12 +943,12 @@ class Handler(BaseHTTPRequestHandler):
                 "event": "request", "method": self.command, "path": self.path,
                 "status": upstream.status_code, "waited_s": waited_s,
                 "dur_s": round(time.monotonic() - t_api, 3),
-                "user_agent": ua, "key_name": key_name,
+                "user_agent": ua, "key_name": key_name, "model": model,
                 "input_tokens": in_tok, "output_tokens": out_tok,
             }))
             record_request(self.command, self.path, upstream.status_code,
                            waited_s, round(time.monotonic() - t_api, 3), ua,
-                           key_name, in_tok, out_tok)
+                           key_name, in_tok, out_tok, model)
         finally:
             _gate.release()
 

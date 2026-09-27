@@ -206,7 +206,7 @@ def db_rows(path, limit=100):
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             "SELECT method, path, status, waited_s, dur_s, user_agent, key_name,"
-            " input_tokens, output_tokens"
+            " input_tokens, output_tokens, model"
             " FROM requests ORDER BY id LIMIT ?", (limit,)).fetchall()]
     finally:
         conn.close()
@@ -919,6 +919,77 @@ def test_api_includes_key_name(proxy_server, upstream):
     wait_for_rows(proxy_server["db"], 1)
     body = requests.get(f"{base}/__api/requests?limit=5", headers=_admin(base), timeout=10).json()
     assert body["requests"][0]["key_name"] == "wanda"
+
+
+# ---------------------------------------------------------------------------
+# Model capture + per-model aggregates + per-key model blocking
+# ---------------------------------------------------------------------------
+def test_post_model_captured_and_per_model_aggregate(proxy_server, upstream):
+    """A POST with a JSON body's `model` field is recorded, surfaced per row,
+    and rolled up in the per_model aggregate."""
+    base = proxy_server["base"]
+    upstream.state.hold_event.set()
+    r = requests.post(f"{base}/v1/chat/completions", headers=auth(TEST_ALICE_KEY),
+                      json={"model": "glm-5.3-flash", "messages": [{"role": "user", "content": "hi"}]},
+                      timeout=10)
+    assert r.status_code == 200
+    rows = wait_for_rows(proxy_server["db"], 1)
+    assert rows[0]["model"] == "glm-5.3-flash"
+
+    body = requests.get(f"{base}/__api/requests?limit=5", headers=_admin(base), timeout=10).json()
+    assert body["requests"][0]["model"] == "glm-5.3-flash"
+    pm = {m["model"]: m for m in body["per_model"]}
+    assert pm["glm-5.3-flash"]["requests"] == 1
+
+    # per-key per-model breakdown from the keys endpoint
+    keys = {k["name"]: k for k in requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10).json()["keys"]}
+    assert keys["trent"]["models"][0]["model"] == "glm-5.3-flash"
+    assert keys["trent"]["models"][0]["requests"] == 1
+
+
+def test_blocked_model_rejected_403(proxy_server, upstream):
+    """PATCH blocked_models then call that model -> 403, nothing upstream."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "nina"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+    assert requests.patch(f"{base}/__api/keys/{kid}", json={"blocked_models": "glm-5.3-flash"},
+                          headers=_admin(base), timeout=10).status_code == 200
+
+    upstream.state.hold_event.set()
+    upstream.state.received.clear()
+    r = requests.post(f"{base}/v1/chat/completions", headers=auth(key),
+                      json={"model": "glm-5.3-flash", "messages": [{"role": "user", "content": "hi"}]},
+                      timeout=10)
+    assert r.status_code == 403
+    assert r.json()["error"]["type"] == "model_not_allowed"
+    assert upstream.state.received == []  # never reached upstream
+
+    # a different model on the same key still passes
+    r2 = requests.post(f"{base}/v1/chat/completions", headers=auth(key),
+                       json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
+                       timeout=10)
+    assert r2.status_code == 200
+
+    # clearing the restriction restores access
+    requests.patch(f"{base}/__api/keys/{kid}", json={"blocked_models": None}, headers=_admin(base), timeout=10)
+    r3 = requests.post(f"{base}/v1/chat/completions", headers=auth(key),
+                       json={"model": "glm-5.3-flash", "messages": [{"role": "user", "content": "hi"}]},
+                       timeout=10)
+    assert r3.status_code == 200
+
+
+def test_cap_exhausted_message_wording(proxy_server, upstream):
+    """At the daily cap the 429 message says 'token exhausted for day'."""
+    base = proxy_server["base"]
+    created = requests.post(f"{base}/__api/keys", json={"name": "oleg"}, headers=_admin(base), timeout=10).json()
+    kid = created["id"]; key = created["key"]
+    requests.patch(f"{base}/__api/keys/{kid}", json={"daily_input_limit": 0}, headers=_admin(base), timeout=10)
+    upstream.state.hold_event.set()
+    r = requests.post(f"{base}/v1/chat/completions", headers=auth(key),
+                      json={"model": "glm-5.3-flash", "messages": [{"role": "user", "content": "hi"}]},
+                      timeout=10)
+    assert r.status_code == 429
+    assert "token exhausted for day" in r.json()["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

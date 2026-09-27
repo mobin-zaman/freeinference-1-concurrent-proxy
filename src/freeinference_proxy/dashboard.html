@@ -179,6 +179,12 @@
     display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 10px;
     background: rgba(91, 140, 255, 0.12); color: var(--accent);
   }
+  .model-chip {
+    display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 10px;
+    background: rgba(154, 123, 255, 0.12); color: var(--quit);
+    max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  td.modelc { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .key-none { color: var(--muted); opacity: .6; }
   td.path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.path .q { color: var(--muted); }
@@ -223,6 +229,20 @@
     border: 1px solid var(--border-soft); border-radius: 5px; padding: 2px 6px;
   }
   .key-row .k-role.admin { color: var(--warn); border-color: var(--border-soft); }
+  .k-models-wrap {
+    display: inline-flex; flex-wrap: wrap; gap: 4px 6px; align-items: center;
+    min-width: 100%; order: 99;  /* own line at the bottom of the key card */
+  }
+  .k-model {
+    font-size: 9px; padding: 2px 7px; border-radius: 5px;
+    background: rgba(154,123,255,0.10); color: var(--quit);
+    font-variant-numeric: tabular-nums;
+  }
+  .k-model b { color: var(--fg); font-weight: 600; }
+  .k-blocked {
+    font-size: 9px; padding: 2px 7px; border-radius: 5px;
+    background: rgba(255,93,93,0.10); color: var(--err);
+  }
   .key-row .k-on {
     font-size: 10px; display: inline-flex; align-items: center; gap: 5px;
     padding: 3px 9px; border-radius: 999px; background: rgba(62,207,142,0.12); color: var(--ok);
@@ -308,9 +328,10 @@
     body { padding: 14px 12px; }
     h1 { font-size: 14px; }
     .live { order: 2; }
-    .h-right { width: 100%; }
-    .seg { flex: 1; }
+    .h-right { width: 100%; flex-wrap: wrap; }
+    .seg { flex: 1; min-width: 0; }
     .seg button { flex: 1; text-align: center; }
+    .refresh { flex: 1 1 100%; justify-content: center; }
 
     .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
     .stat { padding: 12px 14px; }
@@ -329,7 +350,8 @@
         "path     status"
         "method   time"
         "tokens   queued"
-        "dur      dur"
+        "dur      out"
+        "model    model"
         "key      key"
         "ua       ua";
       gap: 4px 10px;
@@ -350,19 +372,21 @@
     tbody tr td:nth-child(5) { grid-area: queued; font-size: 10px; }
     tbody tr td:nth-child(6) { grid-area: dur;    font-size: 10px; }
     tbody tr td:nth-child(7) { grid-area: tokens; font-size: 10px; color: var(--quit); }
-    tbody tr td:nth-child(8) { grid-area: tokens; font-size: 10px; color: var(--quit); padding-left: 12px; }
-    tbody tr td:nth-child(9) { grid-area: key; font-size: 10px; color: var(--accent); }
-    tbody tr td:nth-child(10) { grid-area: ua;  font-size: 10px; color: var(--muted); }
+    tbody tr td:nth-child(8) { grid-area: out;    font-size: 10px; color: var(--quit); }
+    tbody tr td:nth-child(9) { grid-area: model; font-size: 10px; color: var(--accent); max-width: 100%; }
+    tbody tr td:nth-child(10) { grid-area: key; font-size: 10px; color: var(--accent); }
+    tbody tr td:nth-child(11) { grid-area: ua;  font-size: 10px; color: var(--muted); }
 
     /* Inline labels so hidden table headers still read on touch */
     tbody tr td:nth-child(1)::before { content: "time"; }
     tbody tr td:nth-child(2)::before { content: "method"; }
     tbody tr td:nth-child(5)::before { content: "queued"; }
     tbody tr td:nth-child(6)::before { content: "dur"; }
-    tbody tr td:nth-child(7)::before { content: "tokens"; }
+    tbody tr td:nth-child(7)::before { content: "in"; }
     tbody tr td:nth-child(8)::before { content: "out"; }
-    tbody tr td:nth-child(9)::before { content: "key: "; }
-    tbody tr td:nth-child(10)::before { content: "ua: "; }
+    tbody tr td:nth-child(9)::before { content: "model"; }
+    tbody tr td:nth-child(10)::before { content: "key: "; }
+    tbody tr td:nth-child(11)::before { content: "ua: "; }
     tbody tr td::before {
       color: var(--muted); opacity: .7; font-size: 9px;
       text-transform: uppercase; letter-spacing: .05em; margin-right: 6px;
@@ -427,6 +451,24 @@
     <div class="key-err" id="key-err" style="display:none"></div>
   </div>
 
+  <div class="section" id="models-section" style="display:none">
+    <div class="section-head">
+      <h2>Per-model usage</h2>
+      <div class="chips"><span class="chip">by model · current range</span></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th><th class="num">Requests</th>
+            <th class="num">In</th><th class="num">Out</th>
+          </tr>
+        </thead>
+        <tbody id="model-rows"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="section">
     <div class="section-head">
       <h2>Recent requests</h2>
@@ -444,10 +486,10 @@
           <tr>
             <th>Time</th><th>Method</th><th>Path</th>
             <th class="num">Status</th><th class="num">Queued</th>
-            <th class="num">Dur</th><th class="num">In</th><th class="num">Out</th><th>Key</th><th>User-Agent</th>
+            <th class="num">Dur</th><th class="num">In</th><th class="num">Out</th><th>Model</th><th>Key</th><th>User-Agent</th>
           </tr>
         </thead>
-        <tbody id="rows"><tr class="empty"><td colspan="10" style="border:none">Loading…</td></tr></tbody>
+        <tbody id="rows"><tr class="empty"><td colspan="11" style="border:none">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -466,6 +508,7 @@ let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
 let keyName = 'all'; // active app-key filter, 'all' = every key
 let keyNames = new Set(); // distinct keys offered in the filter dropdown
 let _inTok = 0, _outTok = 0; // running full-window token aggregates (set by load, incremented by prependRow)
+let _perModel = []; // running per-model aggregate for the current range/key window
 
 // ---- Theme (dark is the product look; there is no light mode) ----
 document.documentElement.setAttribute('data-theme', 'dark');
@@ -544,6 +587,7 @@ async function load() {
     const inTok = data.input_tokens || 0;    // full-window aggregate, not the 100-row subset
     const outTok = data.output_tokens || 0;
     _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
+    _perModel = data.per_model || [];
 
     // Track every key seen so the filter dropdown stays current (incl. the
     // implicit 'hermes' key, which is never in the api_keys table).
@@ -553,6 +597,7 @@ async function load() {
 
     updateStats(total, errors, rows, inTok, outTok);
     renderTable(rows, true);
+    renderModels(data.per_model);
     seen = new Set(rows.map(r => r.id));
     const maxId = rows.length ? Math.max(...rows.map(r => r.id)) : 0;
     window._maxSeenId = maxId;
@@ -593,6 +638,7 @@ function rowHtml(r, isNew) {
   const min = r.waited_s > 0.001;
   const it = r.input_tokens || 0, ot = r.output_tokens || 0;
   const tokCls = (it || ot) ? '' : ' zero';
+  const model = r.model ? '<span class="model-chip">' + esc(r.model) + '</span>' : '<span class="key-none">–</span>';
   const key = r.key_name && r.key_name !== 'admin' ? '<span class="key-chip">' + esc(r.key_name) + '</span>' : (r.key_name ? esc(r.key_name) : '<span class="key-none">–</span>');
   return `<tr class="${isNew ? 'is-new' : ''}">
     <td class="mono">${esc(r.ts)}</td>
@@ -603,6 +649,7 @@ function rowHtml(r, isNew) {
     <td class="num dur">${r.dur_s.toFixed(2)}s</td>
     <td class="num tok${tokCls}">${it ? fmtTok(it) : '–'}</td>
     <td class="num tok${tokCls}">${ot ? fmtTok(ot) : '–'}</td>
+    <td class="modelc" title="${esc(r.model || '')}">${model}</td>
     <td class="mono keyc" title="${esc(r.key_name || '')}">${key}</td>
     <td class="mono ua" title="${esc(r.user_agent)}">${esc(r.user_agent)}</td>
   </tr>`;
@@ -612,10 +659,24 @@ function renderTable(rows, full) {
   const tbody = $('rows');
   tbody.className = full ? '' : 'no-anim';
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => rowHtml(r, full)).join('');
+}
+
+function renderModels(perModel) {
+  const sec = $('models-section');
+  const rows = perModel || [];
+  if (!rows.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  $('model-rows').innerHTML = rows.map(m => `
+    <tr>
+      <td class="mono modelc"><span class="model-chip" title="${esc(m.model)}">${esc(m.model)}</span></td>
+      <td class="num">${(m.requests || 0).toLocaleString()}</td>
+      <td class="num tok">${fmtTok(m.input_tokens || 0)}</td>
+      <td class="num tok">${fmtTok(m.output_tokens || 0)}</td>
+    </tr>`).join('');
 }
 
 // ---- Realtime: SSE pushes new request rows as they land ----
@@ -648,6 +709,14 @@ function prependRow(r) {
   // Keep the stat-card token totals alive across realtime adds (never zero them).
   _inTok += r.input_tokens || 0;
   _outTok += r.output_tokens || 0;
+  // Bump the per-model table in realtime: merge this row into the existing aggregate.
+  const pm = _perModel;
+  if (r.model) {
+    let e = pm.find(m => m.model === r.model);
+    if (!e) { e = { model: r.model, requests: 0, input_tokens: 0, output_tokens: 0 }; pm.push(e); }
+    e.requests += 1; e.input_tokens += r.input_tokens || 0; e.output_tokens += r.output_tokens || 0;
+    renderModels(pm);
+  }
   updateStats(
     (parseInt($('s-total').textContent.replace(/[^\d]/g, '')) + 1) || 0,
     r.status >= 400 ? (parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) + 1) || 0 : parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) || 0,
@@ -724,6 +793,17 @@ function renderKey(k) {
   const toks = (it || ot)
     ? `<span style="font-size:10px;color:var(--fg)"><span style="color:var(--accent)">in ${fmtTok(it)}</span> · <span style="color:var(--quit)">out ${fmtTok(ot)}</span></span>`
     : '<span class="k-none-mini" style="font-size:10px;color:var(--muted);opacity:.6">no usage</span>';
+  // Per-model breakdown chips for this key within the active range.
+  const kModels = (k.models || [])
+    .map(m => `<span class="k-model" title="${esc(m.model)} — in ${fmtTok(m.input_tokens || 0)} · out ${fmtTok(m.output_tokens || 0)} · ${(m.requests || 0)} req"><b>${esc(m.model)}</b> ${fmtTok((m.input_tokens || 0) + (m.output_tokens || 0))} tok · ${m.requests || 0}×</span>`)
+    .join('');
+  // Blocked-model restriction chip(s) for this key.
+  const blocked = (k.blocked_models || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+    .map(m => `<span class="k-blocked" title="Model blocked for this key: ${esc(m)}">⛔ ${esc(m)}</span>`)
+    .join('');
+  const modelsRow = (kModels || blocked)
+    ? `<span class="k-models-wrap">${kModels}${blocked}</span>` : '';
   return `<div class="key-row" data-id="${k.id}">
     <span class="k-name" title="${esc(k.name)}">${esc(k.name)}</span>
     <span class="k-mask" title="${esc(k.masked)}">${esc(k.masked)}</span>
@@ -739,6 +819,7 @@ function renderKey(k) {
     </span>
     <button class="toggle ${toggleCls}" data-id="${k.id}" data-enabled="${en ? 1 : 0}">${toggleLabel}</button>
     <button class="toggle danger del-key" data-id="${k.id}" data-name="${esc(k.name)}" title="Delete this key">Delete</button>
+    ${modelsRow}
   </div>`;
 }
 
