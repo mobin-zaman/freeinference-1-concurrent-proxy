@@ -519,6 +519,7 @@ let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
 let keyName = 'all'; // active app-key filter, 'all' = every key
 let keyNames = new Set(); // distinct keys offered in the filter dropdown
 let _inTok = 0, _outTok = 0; // running full-window token aggregates (set by load, incremented by prependRow)
+let _total = 0, _errors = 0; // running full-window totals (set by load, incremented by prependRow)
 let _perModel = []; // running per-model aggregate for the current range/key window
 
 // ---- Theme (dark is the product look; there is no light mode) ----
@@ -598,6 +599,7 @@ async function load() {
     const inTok = data.input_tokens || 0;    // full-window aggregate, not the 100-row subset
     const outTok = data.output_tokens || 0;
     _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
+    _total = total; _errors = errors;
     _perModel = data.per_model || [];
 
     // Track every key seen so the filter dropdown stays current (incl. the
@@ -620,29 +622,53 @@ async function load() {
 }
 
 function updateStats(total, errors, rows, inTok, outTok) {
-  setFlash($('s-total'), total.toLocaleString());
-  setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : 'flash-acn');
+  setFlash($('s-total'), total.toLocaleString(), null, total, n => Math.round(n).toLocaleString());
+  setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : 'flash-acn',
+           errors, n => Math.round(n).toLocaleString());
   // token totals: use the backend's full-window aggregate (matches the range
   // filter), not a re-sum of the last-100 loaded rows.
-  setFlash($('s-intok'), fmtTok(inTok), inTok ? 'flash-quit' : 'flash-acn');
-  setFlash($('s-outtok'), fmtTok(outTok), outTok ? 'flash-quit' : 'flash-acn');
+  setFlash($('s-intok'), fmtTok(inTok), inTok ? 'flash-quit' : 'flash-acn', inTok, n => Math.round(n).toLocaleString(), fmtTok(inTok));
+  setFlash($('s-outtok'), fmtTok(outTok), outTok ? 'flash-quit' : 'flash-acn', outTok, n => Math.round(n).toLocaleString(), fmtTok(outTok));
   $('c-intok').textContent = fmtTok(inTok);
   $('c-outtok').textContent = fmtTok(outTok);
   const queued = rows.filter(r => r.waited_s > 0).length;
   setFlash($('s-queued'), queued + '/' + rows.length);
   // avg queue time and avg duration over the loaded rows
   const avgq = rows.length ? (rows.reduce((a, r) => a + (r.waited_s || 0), 0) / rows.length) : 0;
-  setFlash($('s-avgq'), avgq.toFixed(2) + 's', avgq > 0 ? 'flash-quit' : 'flash-acn');
+  setFlash($('s-avgq'), avgq.toFixed(2) + 's', avgq > 0 ? 'flash-quit' : 'flash-acn', avgq, n => n.toFixed(2) + 's');
   const avg = rows.length ? (rows.reduce((a, r) => a + (r.dur_s || 0), 0) / rows.length) : 0;
-  setFlash($('s-avgdur'), avg.toFixed(1) + 's');
+  setFlash($('s-avgdur'), avg.toFixed(1) + 's', null, avg, n => n.toFixed(1) + 's');
 }
 
-function setFlash(el, text, cls) {
-  if (el.textContent === text) return;
-  el.textContent = text;
+// Tween a live number: counts from its previous value to the new one.
+// Skips the tween (snaps) under prefers-reduced-motion or when no previous value.
+function animNum(el, num, fmt, finalText) {
+  const prev = el.dataset.num === '' || el.dataset.num === undefined ? null : parseFloat(el.dataset.num);
+  el.dataset.num = num;
+  cancelAnimationFrame(el._raf);
+  if (prev === null || isNaN(prev) || prev === num ||
+      matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    el.textContent = finalText !== undefined ? finalText : fmt(num);
+    return;
+  }
+  const start = performance.now(), dur = 500, from = prev, to = num;
+  const step = now => {
+    const t = Math.min(1, (now - start) / dur);
+    const e = 1 - Math.pow(1 - t, 3); // ease-out cubic
+    el.textContent = fmt(from + (to - from) * e);
+    if (t < 1) el._raf = requestAnimationFrame(step);
+    else el.textContent = finalText !== undefined ? finalText : fmt(num);
+  };
+  el._raf = requestAnimationFrame(step);
+}
+
+function setFlash(el, text, cls, num, fmt, landText) {
+  if (el.textContent === text && (num === undefined || el.dataset.num === String(num))) return;
   el.classList.remove('flash-acn', 'flash-err', 'flash-warn', 'flash-quit');
   void el.offsetWidth; // restart animation
   el.classList.add(cls || 'flash-acn');
+  if (num !== undefined && fmt) animNum(el, num, fmt, landText !== undefined ? landText : text);
+  else { el.dataset.num = ''; el.textContent = text; }
 }
 
 function rowHtml(r, isNew) {
@@ -731,9 +757,11 @@ function prependRow(r) {
     input_tokens: parseFloat(tr.children[6].textContent.replace(/[^\d]/g, '')) || 0,
     output_tokens: parseFloat(tr.children[7].textContent.replace(/[^\d]/g, '')) || 0,
   }));
-  // Keep the stat-card token totals alive across realtime adds (never zero them).
+  // Keep the stat-card totals alive across realtime adds (never zero them).
   _inTok += r.input_tokens || 0;
   _outTok += r.output_tokens || 0;
+  _total += 1;
+  if (r.status >= 400) _errors += 1;
   // Bump the per-model table in realtime: merge this row into the existing aggregate
   // (both the model totals and its per-user sub-row).
   const pm = _perModel;
@@ -748,13 +776,7 @@ function prependRow(r) {
     e.users.sort((a, b) => b.requests - a.requests);
     renderModels(pm);
   }
-  updateStats(
-    (parseInt($('s-total').textContent.replace(/[^\d]/g, '')) + 1) || 0,
-    r.status >= 400 ? (parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) + 1) || 0 : parseInt($('s-errors').textContent.replace(/[^\d]/g, '')) || 0,
-    rows,
-    _inTok,
-    _outTok
-  );
+  updateStats(_total, _errors, rows, _inTok, _outTok);
   $('ts').textContent = 'live · ' + new Date().toLocaleTimeString();
 }
 
