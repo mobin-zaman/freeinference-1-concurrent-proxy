@@ -179,9 +179,11 @@
     display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 10px;
     background: rgba(91, 140, 255, 0.12); color: var(--accent);
   }
-  /* Flag rows from the nirjhor key so they stand out in the realtime log */
+  /* Flag rows from specific keys so they stand out in the realtime log */
   tr.row-nirjhor td { background: rgba(245, 166, 35, 0.06); }
   tr.row-nirjhor .key-chip { background: rgba(245, 166, 35, 0.18); color: var(--warn); }
+  tr.row-experimental-hermes td { background: rgba(38, 205, 190, 0.06); }
+  tr.row-experimental-hermes .key-chip { background: rgba(38, 205, 190, 0.18); color: #2ec9b8; }
   .model-chip {
     display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 10px;
     background: rgba(154, 123, 255, 0.12); color: var(--quit);
@@ -678,7 +680,8 @@ function rowHtml(r, isNew) {
   const model = r.model ? '<span class="model-chip">' + esc(r.model) + '</span>' : '<span class="key-none">–</span>';
   const key = r.key_name && r.key_name !== 'admin' ? '<span class="key-chip">' + esc(r.key_name) + '</span>' : (r.key_name ? esc(r.key_name) : '<span class="key-none">–</span>');
   const nir = r.key_name && r.key_name.toLowerCase().indexOf('nirjhor') !== -1 ? ' row-nirjhor' : '';
-  return `<tr class="${isNew ? 'is-new' : ''}${nir}">
+  const eh = r.key_name && r.key_name.toLowerCase().indexOf('experimental-hermes') !== -1 ? ' row-experimental-hermes' : '';
+  return `<tr class="${isNew ? 'is-new' : ''}${nir}${eh}">
     <td class="mono">${esc(r.ts)}</td>
     <td class="mono">${esc(r.method)}</td>
     <td class="path" title="${esc(r.path)}">${pathCell(r.path)}</td>
