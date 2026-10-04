@@ -189,6 +189,8 @@
     background: rgba(154, 123, 255, 0.12); color: var(--quit);
     max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .model-chip.probe { background: rgba(95, 118, 255, 0.10); color: var(--muted); font-style: italic; }
+  .model-none { color: var(--muted); opacity: .6; }
   td.modelc { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-totals td { background: transparent; }
   .model-totals .model-chip { font-weight: 600; }
@@ -438,7 +440,7 @@
 
   <div class="stats" id="stats">
     <div class="stat"><div class="label">Total requests</div><div class="value acn" id="s-total">–</div></div>
-    <div class="stat"><div class="label">Success rate</div><div class="value ok" id="s-succ">–</div><div class="sub">(total − errors) / total</div></div>
+    <div class="stat"><div class="label">Throughput</div><div class="value quit" id="s-thru">–</div><div class="sub">tok/s last 100</div></div>
     <div class="stat"><div class="label">Errors (≥400)</div><div class="value err" id="s-errors">–</div></div>
     <div class="stat"><div class="label">Input tokens</div><div class="value quit" id="s-intok">–</div></div>
     <div class="stat"><div class="label">Output tokens</div><div class="value quit" id="s-outtok">–</div></div>
@@ -626,13 +628,16 @@ async function load() {
 
 function updateStats(total, errors, rows, inTok, outTok) {
   setFlash($('s-total'), total.toLocaleString(), null, total, n => Math.round(n).toLocaleString());
-  // success rate over the same full-window filter (total & errors both server-range totals).
-  const su = total ? (100 * (total - errors) / total) : null;
-  setFlash($('s-succ'),
-           su === null ? '–' : su.toFixed(1) + '%',
-           su === null ? '' : (su >= 99 ? 'flash-acn' : su >= 95 ? 'flash-warn' : 'flash-err'),
-           su === null ? null : su,
-           n => n.toFixed(1) + '%');
+  // throughput: total tokens processed per second across loaded rows — how much
+  // real work the serializing proxy is getting done right now (skips the 404/429
+  // client-noise so it tracks productive load, not request count).
+  const tokSum = rows.reduce((a, r) => a + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
+  const durSum = rows.reduce((a, r) => a + (r.dur_s || 0), 0);
+  const thru = durSum > 0 ? tokSum / durSum : 0;
+  setFlash($('s-thru'),
+           thru > 0 ? thru.toFixed(1) + 'k/s' : '–',
+           thru > 0 ? 'flash-quit' : 'flash-acn',
+           thru, n => n.toFixed(1) + 'k/s');
   setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : 'flash-acn',
            errors, n => Math.round(n).toLocaleString());
   // token totals: use the backend's full-window aggregate (matches the range
@@ -685,7 +690,10 @@ function rowHtml(r, isNew) {
   const min = r.waited_s > 0.001;
   const it = r.input_tokens || 0, ot = r.output_tokens || 0;
   const tokCls = (it || ot) ? '' : ' zero';
-  const model = r.model ? '<span class="model-chip">' + esc(r.model) + '</span>' : '<span class="key-none">–</span>';
+  const model = r.model ? '<span class="model-chip">' + esc(r.model) + '</span>'
+    : (r.path.indexOf('/models') !== -1
+        ? '<span class="model-chip probe">' + esc(r.path.replace(/^\/*api\/*|^\/*v1\/*/, '')) + '</span>'
+        : '<span class="model-none">–</span>');
   const key = r.key_name && r.key_name !== 'admin' ? '<span class="key-chip">' + esc(r.key_name) + '</span>' : (r.key_name ? esc(r.key_name) : '<span class="key-none">–</span>');
   const nir = r.key_name && r.key_name.toLowerCase().indexOf('nirjhor') !== -1 ? ' row-nirjhor' : '';
   const eh = r.key_name && r.key_name.toLowerCase().indexOf('experimental-hermes') !== -1 ? ' row-experimental-hermes' : '';
