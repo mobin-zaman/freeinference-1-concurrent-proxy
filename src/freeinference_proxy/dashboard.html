@@ -116,28 +116,157 @@
   .refresh.loading .spin { animation: rot .6s linear infinite; }
   @keyframes rot { to { transform: rotate(360deg); } }
 
-  /* Stat cards */
+  /* ── Cockpit / instrument console for the whole stats cluster ── */
   .stats {
+    position: relative;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px; margin-bottom: 22px;
+    gap: 14px; margin-bottom: 22px;
+    padding: 18px 16px 16px;
+    border-radius: 14px;
+    background:
+      linear-gradient(180deg, #232936 0%, #161b26 55%, #0f131c 100%);
+    border: 1px solid #2e3648;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.12),   /* machined top bevel */
+      inset 0 14px 24px -18px rgba(0,0,0,.9), /* recessed deck floor */
+      inset 0 -1px 0 rgba(0,0,0,.6),
+      0 1px 0 rgba(0,0,0,.4),
+      0 10px 26px -18px rgba(0,0,0,.7);
+  }
+  /* stamped-in top rail label (engraved) */
+  .stats::before {
+    content: "SYSTEM MONITOR"; position: absolute; top: -7.5px; left: 18px;
+    padding: 0 8px; font-size: 9px; letter-spacing: .22em;
+    color: #5a6478; background: linear-gradient(180deg,#232936,#161b26);
+    border: 1px solid #2e3648; border-radius: 3px;
+    text-shadow: 0 1px 0 rgba(0,0,0,.5);
+    line-height: 13px;
+  }
+  /* corner screws on the console bezel */
+  .stats::after {
+    content: ''; position: absolute; inset: 7px; pointer-events: none;
+    background:
+      radial-gradient(circle at 7px 7px, rgba(255,255,255,.5) 0 1px, #000 2px 3px, transparent 3.5px),
+      radial-gradient(circle at calc(100% - 7px) 7px, rgba(255,255,255,.5) 0 1px, #000 2px 3px, transparent 3.5px);
+    filter: drop-shadow(0 1px 0 rgba(0,0,0,.8));
   }
   .stat {
-    background: var(--card); border: 1px solid var(--border-soft); border-radius: 12px;
-    padding: 14px 16px; box-shadow: var(--shadow);
-    transition: transform 160ms var(--ease-out), border-color 160ms ease, background 160ms ease;
+    position: relative;
+    background:
+      radial-gradient(120% 130% at 50% 0%, rgba(255,255,255,.05), transparent 55%),
+      linear-gradient(180deg, #1d2330 0%, #12161f 100%);
+    border: 1px solid #262e3f;
+    border-radius: 10px;
+    padding: 13px 14px 12px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.10),   /* face top bevel */
+      inset 0 -2px 4px rgba(0,0,0,.65),      /* face bottom reveal */
+      inset 3px 0 6px -4px rgba(0,0,0,.6),
+      0 1px 0 rgba(255,255,255,.04);
+    transition: transform 160ms var(--ease-out), border-color 160ms ease, box-shadow 160ms ease;
   }
-  @media (hover: hover) and (pointer: fine) { .stat:hover { border-color: var(--accent-2); transform: translateY(-2px); } }
-  .stat:active { transform: scale(0.97); }
-  .stat .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-  .stat .value { font-size: 21px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; display: flex; align-items: baseline; gap: 6px; }
+  /* rivet in each instrument corner */
+  .stat::before, .stat::after {
+    content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #8b94ab 0 1px, #0c0f16 2.5px 100%);
+    box-shadow: 0 1px 1px rgba(0,0,0,.7), inset 0 -1px 1px rgba(0,0,0,.8);
+  }
+  .stat::before { top: 6px; left: 6px; }
+  .stat::after  { top: 6px; right: 6px; }
+  .stat:active  { transform: translateY(1px); }
+  @media (hover: hover) and (pointer: fine) {
+    .stat:hover { border-color: var(--accent-2); transform: translateY(-1px);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.12),
+        inset 0 -2px 4px rgba(0,0,0,.65),
+        0 0 0 1px rgba(74,111,209,.25); }
+  }
+  .stat .label {
+    font-size: 9.5px; color: #737e94; text-transform: uppercase;
+    letter-spacing: 0.12em; text-shadow: 0 1px 0 rgba(0,0,0,.55); /* engraved */
+  }
+  .stat .value {
+    font-size: 20px; font-weight: 700; margin-top: 7px;
+    font-variant-numeric: tabular-nums; display: flex;
+    align-items: baseline; gap: 6px;
+  }
   .stat .value small { font-size: 10px; color: var(--muted); font-weight: 500; }
   .stat .value.ok   { color: var(--ok); }
   .stat .value.err  { color: var(--err); }
   .stat .value.warn { color: var(--warn); }
   .stat .value.quit { color: var(--quit); }
   .stat .value.acn  { color: var(--accent); }
-  .stat .sub { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  /* non-odometer values sit in a recessed readout window */
+  .stat .value:not(.digits) {
+    min-height: 1.9em; align-items: center; padding: 4px 10px;
+    background: #0a0d13; border: 1px solid #202736; border-radius: 6px;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,.7), 0 1px 0 rgba(255,255,255,.06);
+    font-weight: 500;
+  }
+  .stat .value.ok   { background: #0d1216; }
+  .stat .value.quit { background: #0d0e16; }
+  .stat .sub { font-size: 10px; color: var(--muted); margin-top: 3px; text-shadow: 0 1px 0 rgba(0,0,0,.5); }
+
+  /* ── Real odometer: recessed drum wheels on a black instrument rail ── */
+  .stat .value.digits { color: #fff; }
+  .stat .value .odo {
+    display: inline-flex; align-items: center;
+    font-size: 0.9em;                 /* single size basis for all em units below */
+    background:
+      linear-gradient(180deg, rgba(120,160,255,.12) 0%, rgba(255,255,255,.05) 18%, rgba(255,255,255,0) 45%),
+      #050507;
+    border: 1px solid #232b3d;
+    border-radius: 5px;
+    padding: 3px 6px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.14),   /* glass top edge */
+      inset 0 -3px 5px rgba(0,0,0,.95),       /* deep readout well */
+      inset 2px 0 4px -3px rgba(0,0,0,.8),
+      0 1px 0 rgba(255,255,255,.05);
+    gap: 1px;
+  }
+  /* the face of each drum cylinder */
+  .stat .value .odo .wheel {
+    position: relative; overflow: hidden;
+    height: 1.55em; min-width: 0.74em;
+    background:
+      radial-gradient(110% 130% at 50% 46%, rgba(255,255,255,.18) 0%, rgba(255,255,255,.05) 36%, rgba(0,0,0,0) 56%),
+      linear-gradient(180deg, #171717 0%, #0a0a0a 45%, #000 100%);
+    border-left: 1px solid rgba(255,255,255,.10);
+    border-right: 1px solid rgba(255,255,255,.10);
+    text-align: center;
+  }
+  /* curved-glass sweep across the drum face */
+  .stat .value .odo .wheel::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.24) 0%, rgba(255,255,255,.05) 20%, rgba(255,255,255,0) 32%),
+      linear-gradient(90deg, rgba(0,0,0,.6) 0%, rgba(0,0,0,0) 14%, rgba(0,0,0,0) 86%, rgba(0,0,0,.6) 100%);
+    box-shadow: inset 0 -3px 4px rgba(0,0,0,.85);
+  }
+  .stat .value .odo .wheel .belt {
+    display: flex; flex-direction: column; align-items: center;
+    will-change: transform;
+  }
+  .stat .value .odo .wheel .belt > span {
+    height: 1.55em; line-height: 1.55em; display: block;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    color: #f5f5f5;
+    text-shadow: 0 1px 0 #000, 0 -1px 0 #000;
+  }
+  .stat .value .odo .wheel.snap .belt { animation: odoSpin 400ms cubic-bezier(0.3,0.7,0.28,1) forwards; }
+  @keyframes odoSpin { from { transform: var(--odo-from, translateY(0)); } to { transform: var(--odo-to); } }
+  /* literal separators (comma, dot, suffix) — printed on the rail, not spinning */
+  .stat .value .odo .lit {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 1.55em; min-width: 0.3em; padding: 0 1px;
+    color: #9a9a9a; font-weight: 500;
+    text-shadow: 0 1px 0 #000;
+  }
+  /* thin divider where one drum meets the next */
+  .stat .value .odo .wheel { box-shadow: -1px 0 0 rgba(0,0,0,.55), 1px 0 0 rgba(0,0,0,.55); }
 
   /* Section */
   .section { margin-bottom: 20px; }
@@ -348,9 +477,10 @@
     .seg button { flex: 1; text-align: center; }
     .refresh { flex: 1 1 100%; justify-content: center; }
 
-    .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
-    .stat { padding: 12px 14px; }
-    .stat .value { font-size: 19px; }
+    .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; padding: 16px 10px 12px; }
+    .stats::after { inset: 5px; }
+    .stat { padding: 11px 12px; }
+    .stat .value { font-size: 18px; }
 
     .refresh { padding: 8px 14px; font-size: 12px; } /* ≥44px touch target */
 
@@ -440,13 +570,13 @@
 
   <div class="stats" id="stats">
     <div class="stat"><div class="label">Total requests</div><div class="value acn" id="s-total">–</div></div>
-    <div class="stat"><div class="label">Throughput</div><div class="value quit" id="s-thru">–</div><div class="sub">tok/s last 100</div></div>
+    <div class="stat"><div class="label">Throughput</div><div class="value quit" id="s-thru">–</div><div class="sub">tok/s · last 500</div></div>
     <div class="stat"><div class="label">Errors (≥400)</div><div class="value err" id="s-errors">–</div></div>
     <div class="stat"><div class="label">Input tokens</div><div class="value quit" id="s-intok">–</div></div>
     <div class="stat"><div class="label">Output tokens</div><div class="value quit" id="s-outtok">–</div></div>
-    <div class="stat"><div class="label">Queue hits</div><div class="value" id="s-queued">–</div><div class="sub">in last 100</div></div>
-    <div class="stat"><div class="label">Avg queue time</div><div class="value quit" id="s-avgq">–</div><div class="sub">last 100</div></div>
-    <div class="stat"><div class="label">Avg duration</div><div class="value" id="s-avgdur">–</div><div class="sub">last 100</div></div>
+    <div class="stat"><div class="label">Queue hits</div><div class="value" id="s-queued">–</div><div class="sub">in last 500</div></div>
+    <div class="stat"><div class="label">Avg queue time</div><div class="value quit" id="s-avgq">–</div><div class="sub">last 500</div></div>
+    <div class="stat"><div class="label">Avg duration</div><div class="value" id="s-avgdur">–</div><div class="sub">last 500</div></div>
   </div>
 
   <div class="section">
@@ -523,9 +653,9 @@ let shownRange = 'all';
 let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
 let keyName = 'all'; // active app-key filter, 'all' = every key
 let keyNames = new Set(); // distinct keys offered in the filter dropdown
-let _inTok = 0, _outTok = 0; // running full-window token aggregates (set by load, incremented by prependRow)
-let _total = 0, _errors = 0; // running full-window totals (set by load, incremented by prependRow)
+let _inTok = 0, _outTok = 0; // running range-filtered token aggregates (set by load, incremented by prependRow; feed the Recent Requests table header chips)
 let _perModel = []; // running per-model aggregate for the current range/key window
+let _last500 = null; // last-500 instrument panel from the backend (drives top stat cluster)
 
 // ---- Theme (dark is the product look; there is no light mode) ----
 document.documentElement.setAttribute('data-theme', 'dark');
@@ -598,14 +728,24 @@ async function load() {
   try {
     const res = await fetch('/__api/requests?limit=100&range=' + shownRange + '&key=' + keyName);
     const data = await res.json();
-    const total = data.total || 0;
-    const errors = data.errors || 0;
     const rows = data.requests || [];
-    const inTok = data.input_tokens || 0;    // full-window aggregate, not the 100-row subset
+    const inTok = data.input_tokens || 0;    // range-filtered aggregate, not the loaded-row subset
     const outTok = data.output_tokens || 0;
     _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
-    _total = total; _errors = errors;
     _perModel = data.per_model || [];
+    // Last-500 instrument-panel numbers come straight from the backend (the
+    // server-side _last500_aggregate). Independent of shownRange/keyName so
+    // the top stat cluster reflects the live proxy state.
+    _last500 = {
+      total: data.last500_total || 0,
+      errors: data.last500_errors || 0,
+      input_tokens: data.last500_input_tokens || 0,
+      output_tokens: data.last500_output_tokens || 0,
+      queued_count: data.last500_queued_count || 0,
+      avg_queue_s: data.last500_avg_queue_s || 0,
+      avg_dur_s: data.last500_avg_dur_s || 0,
+      throughput_tok_per_s: data.last500_throughput_tok_per_s || 0,
+    };
 
     // Track every key seen so the filter dropdown stays current (incl. the
     // implicit 'hermes' key, which is never in the api_keys table).
@@ -613,7 +753,7 @@ async function load() {
     rows.forEach(r => { if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); grew = true; } });
     if (grew) renderKeyFilter();
 
-    updateStats(total, errors, rows, inTok, outTok);
+    updateStats(_last500, rows, inTok, outTok);
     renderTable(rows, true);
     renderModels(data.per_model);
     seen = new Set(rows.map(r => r.id));
@@ -626,59 +766,128 @@ async function load() {
   }
 }
 
-function updateStats(total, errors, rows, inTok, outTok) {
-  setFlash($('s-total'), total.toLocaleString(), null, total, n => Math.round(n).toLocaleString());
-  // throughput: total tokens processed per second across loaded rows — how much
-  // real work the serializing proxy is getting done right now (skips the 404/429
-  // client-noise so it tracks productive load, not request count).
-  const tokSum = rows.reduce((a, r) => a + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
-  const durSum = rows.reduce((a, r) => a + (r.dur_s || 0), 0);
-  const thru = durSum > 0 ? tokSum / durSum : 0;
+function updateStats(l500, rows, inTok, outTok) {
+  // Top stat cluster reads from the backend-supplied last-500 aggregate
+  // (l500.total/errors/tokens/queued/avg/throughput). The Recent Requests
+  // table and per-model section continue to use the range-filtered inTok/
+  // outTok for their header chips. The `rows` argument is unused now but
+  // kept in the signature so realtime prependRow can keep calling this with
+  // the same shape — it supplies its own in-memory last-500 instead.
+  const l500Total = l500 && l500.total != null ? l500.total : 0;
+  const l500Errors = l500 && l500.errors != null ? l500.errors : 0;
+  const l500In = l500 && l500.input_tokens != null ? l500.input_tokens : 0;
+  const l500Out = l500 && l500.output_tokens != null ? l500.output_tokens : 0;
+  const l500Queued = l500 && l500.queued_count != null ? l500.queued_count : 0;
+  const l500Avgq = l500 && l500.avg_queue_s != null ? l500.avg_queue_s : 0;
+  const l500Avgd = l500 && l500.avg_dur_s != null ? l500.avg_dur_s : 0;
+  const l500Thru = l500 && l500.throughput_tok_per_s != null ? l500.throughput_tok_per_s : 0;
+
+  setFlash($('s-total'), l500Total.toLocaleString(), null, l500Total, n => Math.round(n).toLocaleString());
+  const thru = l500Thru;
   setFlash($('s-thru'),
            thru > 0 ? thru.toFixed(1) + 'k/s' : '–',
            thru > 0 ? 'flash-quit' : 'flash-acn',
            thru, n => n.toFixed(1) + 'k/s');
-  setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : 'flash-acn',
-           errors, n => Math.round(n).toLocaleString());
-  // token totals: use the backend's full-window aggregate (matches the range
-  // filter), not a re-sum of the last-100 loaded rows.
-  setFlash($('s-intok'), fmtTok(inTok), inTok ? 'flash-quit' : 'flash-acn', inTok, n => Math.round(n).toLocaleString(), fmtTok(inTok));
-  setFlash($('s-outtok'), fmtTok(outTok), outTok ? 'flash-quit' : 'flash-acn', outTok, n => Math.round(n).toLocaleString(), fmtTok(outTok));
+  setFlash($('s-errors'), l500Errors.toLocaleString(), l500Errors > 0 ? 'flash-err' : 'flash-acn',
+           l500Errors, n => Math.round(n).toLocaleString());
+  // Token totals: top stat cluster reflects last-500 tokens. The Recent
+  // Requests table header chips below use the range-filtered inTok/outTok
+  // (passed in separately) so they stay consistent with the table.
+  setFlash($('s-intok'), fmtTok(l500In), l500In ? 'flash-quit' : 'flash-acn', l500In, n => Math.round(n).toLocaleString(), fmtTok(l500In));
+  setFlash($('s-outtok'), fmtTok(l500Out), l500Out ? 'flash-quit' : 'flash-acn', l500Out, n => Math.round(n).toLocaleString(), fmtTok(l500Out));
   $('c-intok').textContent = fmtTok(inTok);
   $('c-outtok').textContent = fmtTok(outTok);
-  const queued = rows.filter(r => r.waited_s > 0).length;
-  setFlash($('s-queued'), queued + '/' + rows.length);
-  // avg queue time and avg duration over the loaded rows
-  const avgq = rows.length ? (rows.reduce((a, r) => a + (r.waited_s || 0), 0) / rows.length) : 0;
-  setFlash($('s-avgq'), avgq.toFixed(2) + 's', avgq > 0 ? 'flash-quit' : 'flash-acn', avgq, n => n.toFixed(2) + 's');
-  const avg = rows.length ? (rows.reduce((a, r) => a + (r.dur_s || 0), 0) / rows.length) : 0;
-  setFlash($('s-avgdur'), avg.toFixed(1) + 's', null, avg, n => n.toFixed(1) + 's');
+  // Queue hits: denominator is always 500 (the last-500 window), not rows.length.
+  setFlash($('s-queued'), `${l500Queued}/500`, null, l500Queued, n => `${n}/500`);
+  // avg queue time and avg duration over the last-500 rows
+  setFlash($('s-avgq'), l500Avgq.toFixed(2) + 's', l500Avgq > 0 ? 'flash-quit' : 'flash-acn', l500Avgq, n => n.toFixed(2) + 's');
+  setFlash($('s-avgdur'), l500Avgd.toFixed(1) + 's', null, l500Avgd, n => n.toFixed(1) + 's');
 }
 
-// Tween a live number: counts from its previous value to the new one.
-// Skips the tween (snaps) under prefers-reduced-motion or when no previous value.
+// Odometer: animate a number's digits like a mechanical counter. Each digit
+// gets its own black wheel spinning 0-9 to land on the target; separators and
+// suffixes (`,`, `.`, `k`, `s`…) render as fixed literals. Respects
+// prefers-reduced-motion (direct set, no spin) and unchanged values.
 function animNum(el, num, fmt, finalText) {
   const prev = el.dataset.num === '' || el.dataset.num === undefined ? null : parseFloat(el.dataset.num);
   el.dataset.num = num;
-  cancelAnimationFrame(el._raf);
-  if (prev === null || isNaN(prev) || prev === num ||
-      matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    el.textContent = finalText !== undefined ? finalText : fmt(num);
+  const text = finalText !== undefined ? finalText : fmt(num);
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const prevDigits = el._odoPrev || null;
+
+  function render(animate, fromDigits) {
+    el.classList.add('digits');
+    el.innerHTML = '<span class="odo"></span>';
+    const odo = el.querySelector('.odo');
+    const H = 1.55;                       // wheel line height in em
+    const digits = text.split('').filter(c => /\d/.test(c));
+    const writeTo = [];
+    for (const ch of text) {
+      if (/\d/.test(ch)) {
+        const w = document.createElement('span');
+        w.className = 'wheel' + (animate ? ' snap' : '');
+        const belt = document.createElement('span');
+        belt.className = 'belt';
+        const lines = ['•', ...Array.from({length: 20}, (_,i) => String(i % 10)), '•'];
+        for (const s of lines) { const sp = document.createElement('span'); sp.textContent = s; belt.appendChild(sp); }
+        w.appendChild(belt);
+        writeTo.push(belt);
+        odo.appendChild(w);
+      } else {
+        const lit = document.createElement('span');
+        lit.className = 'lit';
+        lit.textContent = ch;
+        odo.appendChild(lit);
+      }
+    }
+    if (animate && (fromDigits || prevDigits)) {
+      // Each wheel rolls the SHORTEST way from its previous digit to the new
+      // one: forward when the value rose, backward when it dropped. Digits live
+      // on belt lines 11..20 (digit d -> line 11+d), so both directions stay
+      // inside the strip and the visible digit is always correct.
+      const lineOf = d => 11 + d;            // `(line-1)%10 === d`
+      writeTo.forEach((belt, i) => {
+        const p = fromDigits ? +fromDigits[i] : (prevDigits && prevDigits[i] !== undefined ? prevDigits[i] : 0);
+        const d = +digits[i];
+        const s = Math.abs(d - p);           // shortest distance, direction from sign
+        const start = -(lineOf(p)) * H;
+        const land  = -(lineOf(d)) * H;
+        belt.style.setProperty('--odo-from', `translateY(${start}em)`);
+        belt.style.setProperty('--odo-to',   `translateY(${land}em)`);
+        const dur = s === 0 ? 150 : 140 + s * 70;
+        belt.style.animationDuration = dur + 'ms';
+        belt.style.animationDelay = (i * 60) + 'ms';
+      });
+    } else {
+      writeTo.forEach((belt, i) => {
+        belt.style.transform = `translateY(${-(11 + (+digits[i])) * H}em)`;
+      });
+    }
+    el._odoPrev = digits.map(Number);
+  }
+
+  const first = prev === null || isNaN(prev);
+  if (first && !reduced) {
+    // First paint: still roll the digits in (from all zeros) so every stat
+    // visibly spins up like a real odometer — avg queue time / duration etc.
+    render(true, digitsOf(text));
     return;
   }
-  const start = performance.now(), dur = 500, from = prev, to = num;
-  const step = now => {
-    const t = Math.min(1, (now - start) / dur);
-    const e = 1 - Math.pow(1 - t, 3); // ease-out cubic
-    el.textContent = fmt(from + (to - from) * e);
-    if (t < 1) el._raf = requestAnimationFrame(step);
-    else el.textContent = finalText !== undefined ? finalText : fmt(num);
-  };
-  el._raf = requestAnimationFrame(step);
+  if (first || prev === num || reduced) {
+    render(false);
+    return;
+  }
+  render(true);
 }
 
+function digitsOf(t) { return t.split('').filter(c => /\d/.test(c)).map(() => 0); }
+
 function setFlash(el, text, cls, num, fmt, landText) {
-  if (el.textContent === text && (num === undefined || el.dataset.num === String(num))) return;
+  // Unchanged? For odometer stats the DOM textContent is the raw belt letters
+  // (never equal to `text`), so compare the tracked numeric value instead;
+  // plain-text stats compare text directly.
+  const same = num !== undefined ? (el.dataset.num === String(num)) : (el.textContent === text);
+  if (same) return;
   el.classList.remove('flash-acn', 'flash-err', 'flash-warn', 'flash-quit');
   void el.offsetWidth; // restart animation
   el.classList.add(cls || 'flash-acn');
@@ -769,18 +978,20 @@ function prependRow(r) {
   const empty = tbody.querySelector('.empty');
   if (empty) tbody.innerHTML = '';
   tbody.insertAdjacentHTML('afterbegin', rowHtml(r, true));
-  while (tbody.rows.length > 100) tbody.deleteRow(-1);
+  // Cap the in-memory recent-rows pool at 500 so the realtime last-500
+  // aggregate stays consistent with the server-side definition. The recent
+  // requests table DOM is trimmed at 500 below.
+  while (tbody.rows.length > 500) tbody.deleteRow(-1);
   const rows = Array.from(tbody.rows).map(tr => ({
     waited_s: parseFloat(tr.children[4].textContent.replace(/[^\d.]/g, '')) || 0,
     dur_s: parseFloat(tr.children[5].textContent) || 0,
     input_tokens: parseFloat(tr.children[6].textContent.replace(/[^\d]/g, '')) || 0,
     output_tokens: parseFloat(tr.children[7].textContent.replace(/[^\d]/g, '')) || 0,
+    status: parseInt(tr.children[3].textContent, 10) || 0,
   }));
-  // Keep the stat-card totals alive across realtime adds (never zero them).
+  // Keep the range-filtered token totals alive across realtime adds.
   _inTok += r.input_tokens || 0;
   _outTok += r.output_tokens || 0;
-  _total += 1;
-  if (r.status >= 400) _errors += 1;
   // Bump the per-model table in realtime: merge this row into the existing aggregate
   // (both the model totals and its per-user sub-row).
   const pm = _perModel;
@@ -795,7 +1006,26 @@ function prependRow(r) {
     e.users.sort((a, b) => b.requests - a.requests);
     renderModels(pm);
   }
-  updateStats(_total, _errors, rows, _inTok, _outTok);
+  // Build the in-memory last-500 aggregate from the visible DOM rows. The
+  // server's authoritative last-500 reflects the *unfiltered* last 500; this
+  // client-side version is range/key-filtered like the rest of the realtime
+  // path — an acceptable approximation that keeps the odometer rolling
+  // between /__api/requests refreshes.
+  const n = rows.length;
+  const l500 = {
+    total: n,
+    errors: rows.reduce((a, x) => a + (x.status >= 400 ? 1 : 0), 0),
+    input_tokens: rows.reduce((a, x) => a + (x.input_tokens || 0), 0),
+    output_tokens: rows.reduce((a, x) => a + (x.output_tokens || 0), 0),
+    queued_count: rows.reduce((a, x) => a + ((x.waited_s || 0) > 0 ? 1 : 0), 0),
+    avg_queue_s: n ? rows.reduce((a, x) => a + (x.waited_s || 0), 0) / n : 0,
+    avg_dur_s: n ? rows.reduce((a, x) => a + (x.dur_s || 0), 0) / n : 0,
+  };
+  const durSum = rows.reduce((a, x) => a + (x.dur_s || 0), 0);
+  l500.throughput_tok_per_s = durSum > 0
+    ? (l500.input_tokens + l500.output_tokens) / durSum : 0;
+  _last500 = l500;
+  updateStats(l500, rows, _inTok, _outTok);
   $('ts').textContent = 'live · ' + new Date().toLocaleTimeString();
 }
 

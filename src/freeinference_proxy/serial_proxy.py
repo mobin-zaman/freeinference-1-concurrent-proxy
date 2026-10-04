@@ -39,7 +39,7 @@ UPSTREAM = "https://freeinference.org"
 LISTEN_HOST = "127.0.0.1"   # localhost-only, always
 LISTEN_PORT = 8788
 GATE_LIMIT = 1              # hard global serialization: 1 in-flight request
-ACQUIRE_TIMEOUT = 300       # max seconds to wait in queue before 429ing
+ACQUIRE_TIMEOUT = 600       # max seconds to wait in queue before 429ing
 READ_TIMEOUT = (30, 900)    # (connect, read) — long generations need patience
 UPSTREAM_429_RETRIES = 2    # extra attempts after an upstream 429 (transient rate limit)
 RETRY_AFTER_CAP_S = 5       # cap on honored Retry-After seconds
@@ -742,6 +742,12 @@ class Handler(BaseHTTPRequestHandler):
                 for m in model_map.values():
                     m["users"].sort(key=lambda u: -u["requests"])
                 per_model = sorted(model_map.values(), key=lambda m: -m["requests"])
+                # Last-500 instrument panel: independent of the range/key filter
+                # so the top stats cluster reflects the live proxy state, not
+                # the operator's browse-time window. Runs inside the same locked
+                # conn as the range-filtered aggregate so it costs one extra
+                # LIMIT-500 query per /__api/requests call.
+                last500 = self._last500_aggregate(conn)
                 conn.close()
             self._reply_json(200, {
                 "requests": [dict(r) for r in rows],
@@ -750,6 +756,7 @@ class Handler(BaseHTTPRequestHandler):
                 "input_tokens": int(tin or 0), "output_tokens": int(tout or 0),
                 "avg_queue_s": round(float(avgq or 0), 3),
                 "per_model": sorted(per_model, key=lambda m: -m["requests"]),
+                **last500,
             })
             return True
         if self.path.startswith("/__dashboard"):
@@ -760,6 +767,46 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(_DASHBOARD)
             return True
         return False
+
+    @staticmethod
+    def _last500_aggregate(conn) -> dict:
+        """Return the last-500-row instrument panel: total / errors / tokens /
+        queue hits / avg queue time / avg duration / tok-per-second throughput.
+
+        Independent of the active range and key filters so the dashboard's
+        top stat cluster stays the live "right now" view no matter what
+        window the operator has selected. Reads from `conn` which is already
+        inside the proxy's `_db_lock` block.
+        """
+        rows = conn.execute(
+            "SELECT status, waited_s, dur_s, input_tokens, output_tokens"
+            " FROM requests ORDER BY id DESC LIMIT 500"
+        ).fetchall()
+        n = len(rows)
+        if not n:
+            return {
+                "last500_total": 0, "last500_errors": 0,
+                "last500_input_tokens": 0, "last500_output_tokens": 0,
+                "last500_queued_count": 0,
+                "last500_avg_queue_s": 0.0, "last500_avg_dur_s": 0.0,
+                "last500_throughput_tok_per_s": 0.0,
+            }
+        errs = sum(1 for r in rows if r["status"] >= 400)
+        tin = sum(int(r["input_tokens"] or 0) for r in rows)
+        tout = sum(int(r["output_tokens"] or 0) for r in rows)
+        queued = sum(1 for r in rows if (r["waited_s"] or 0) > 0)
+        avgq = sum(float(r["waited_s"] or 0) for r in rows) / n
+        avgd = sum(float(r["dur_s"] or 0) for r in rows) / n
+        dur_sum = sum(float(r["dur_s"] or 0) for r in rows)
+        thru = (tin + tout) / dur_sum if dur_sum > 0 else 0.0
+        return {
+            "last500_total": n, "last500_errors": errs,
+            "last500_input_tokens": tin, "last500_output_tokens": tout,
+            "last500_queued_count": queued,
+            "last500_avg_queue_s": round(avgq, 3),
+            "last500_avg_dur_s": round(avgd, 3),
+            "last500_throughput_tok_per_s": round(thru, 3),
+        }
 
     def _proxy(self) -> None:
         t0 = time.monotonic()

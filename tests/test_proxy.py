@@ -567,6 +567,103 @@ def test_api_range_invalid_defaults_to_all(proxy_server, upstream):
     assert r["input_tokens"] == 11
 
 
+def test_api_includes_last500_aggregate(proxy_server, upstream):
+    """The /__api/requests response exposes last500_* aggregates derived from
+    the 500 most recent rows by id, independent of the range/key filter."""
+    base = proxy_server["base"]
+    db = proxy_server["db"]
+    # Seed 600 rows directly via record_request so the test doesn't take 75s.
+    # First 100: status=200, dur=1.0, waited=0.0, tokens 10/5 each.
+    # Next 500:   status mix (400 + 200), dur=2.0, waited=0.5, tokens 1/2 each.
+    # Seeding via a single transactional insert is fast (~50ms) and respects
+    # the proxy's _db_lock by taking it once. record_request's per-row
+    # schema-check overhead would otherwise make this test take ~10s.
+    now = time.time()
+    rows = []
+    for i in range(100):
+        rows.append((now, "2026-10-05 00:00:00", "GET", f"/v1/models?seed={i}",
+                     200, 0.0, 1.0, "t/1", "alice", 10, 5, ""))
+    for i in range(500):
+        st = 400 if i % 10 == 0 else 200  # 50 errors, 450 successes in last-500
+        rows.append((now, "2026-10-05 00:00:00", "POST", f"/v1/chat?seed={i}",
+                     st, 0.5, 2.0, "t/1", "alice", 1, 2, "m"))
+    with proxy._db_lock:
+        conn = proxy._db()
+        try:
+            conn.executemany(
+                "INSERT INTO requests (at, ts, method, path, status, waited_s,"
+                " dur_s, user_agent, key_name, input_tokens, output_tokens, model)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.commit()
+        finally:
+            conn.close()
+    assert len(db_rows(db, limit=1000)) >= 600
+
+    # Range=all should ignore the first 100 — last500_* reflect only the last 500.
+    r_all = requests.get(f"{base}/__api/requests?range=all&limit=50",
+                         headers=auth(TEST_ADMIN_KEY), timeout=5).json()
+    for k in ("last500_total", "last500_errors", "last500_input_tokens",
+              "last500_output_tokens", "last500_avg_queue_s",
+              "last500_avg_dur_s", "last500_throughput_tok_per_s",
+              "last500_queued_count"):
+        assert k in r_all, f"missing last500 key: {k}"
+    assert r_all["last500_total"] == 500
+    assert r_all["last500_errors"] == 50
+    assert r_all["last500_input_tokens"] == 500
+    assert r_all["last500_output_tokens"] == 1000
+    assert r_all["last500_queued_count"] == 500
+    assert r_all["last500_avg_queue_s"] == 0.5
+    assert r_all["last500_avg_dur_s"] == 2.0
+    # throughput = (500 + 1000) / (500 * 2.0) = 1500 / 1000 = 1.5 tok/s
+    assert abs(r_all["last500_throughput_tok_per_s"] - 1.5) < 1e-6
+
+    # Range=today must NOT change last500_* — they're independent of the filter.
+    r_today = requests.get(f"{base}/__api/requests?range=today&limit=50",
+                           headers=auth(TEST_ADMIN_KEY), timeout=5).json()
+    assert r_today["last500_total"] == r_all["last500_total"]
+    assert r_today["last500_errors"] == r_all["last500_errors"]
+    assert r_today["last500_input_tokens"] == r_all["last500_input_tokens"]
+
+    # The range-filtered totals should still reflect ALL 600 rows.
+    assert r_all["total"] == 600
+    assert r_all["input_tokens"] == 100 * 10 + 500 * 1
+    assert r_all["output_tokens"] == 100 * 5 + 500 * 2
+
+
+def test_api_last500_aggregate_with_key_filter(proxy_server, upstream):
+    """The key= filter scopes the range-filtered aggregate, but last500_* stays
+    independent of the filter (it always reflects the whole proxy's last 500)."""
+    base = proxy_server["base"]
+    db = proxy_server["db"]
+    # Seed 600 rows transactionally (see note above).
+    now = time.time()
+    rows = []
+    for i in range(600):
+        key = "alice" if i < 300 else "bob"
+        rows.append((now, "2026-10-05 00:00:00", "GET", f"/v1/models?i={i}",
+                     200, 0.0, 1.0, "t/1", key, 1, 2, ""))
+    with proxy._db_lock:
+        conn = proxy._db()
+        try:
+            conn.executemany(
+                "INSERT INTO requests (at, ts, method, path, status, waited_s,"
+                " dur_s, user_agent, key_name, input_tokens, output_tokens, model)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.commit()
+        finally:
+            conn.close()
+    assert len(db_rows(db, limit=1000)) >= 600
+
+    r = requests.get(f"{base}/__api/requests?range=all&key=bob&limit=50",
+                     headers=auth(TEST_ADMIN_KEY), timeout=5).json()
+    # range+key slice: only bob rows
+    assert r["total"] == 300
+    # last500 still covers the whole proxy
+    assert r["last500_total"] == 500
+    assert r["last500_input_tokens"] == 500
+    assert r["last500_output_tokens"] == 1000
+
+
 # ---------------------------------------------------------------------------
 # API-key authentication
 # ---------------------------------------------------------------------------
