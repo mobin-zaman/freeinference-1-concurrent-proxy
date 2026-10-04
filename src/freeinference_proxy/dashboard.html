@@ -438,6 +438,7 @@
 
   <div class="stats" id="stats">
     <div class="stat"><div class="label">Total requests</div><div class="value acn" id="s-total">–</div></div>
+    <div class="stat"><div class="label">Success rate</div><div class="value ok" id="s-succ">–</div><div class="sub">(total − errors) / total</div></div>
     <div class="stat"><div class="label">Errors (≥400)</div><div class="value err" id="s-errors">–</div></div>
     <div class="stat"><div class="label">Input tokens</div><div class="value quit" id="s-intok">–</div></div>
     <div class="stat"><div class="label">Output tokens</div><div class="value quit" id="s-outtok">–</div></div>
@@ -625,6 +626,13 @@ async function load() {
 
 function updateStats(total, errors, rows, inTok, outTok) {
   setFlash($('s-total'), total.toLocaleString(), null, total, n => Math.round(n).toLocaleString());
+  // success rate over the same full-window filter (total & errors both server-range totals).
+  const su = total ? (100 * (total - errors) / total) : null;
+  setFlash($('s-succ'),
+           su === null ? '–' : su.toFixed(1) + '%',
+           su === null ? '' : (su >= 99 ? 'flash-acn' : su >= 95 ? 'flash-warn' : 'flash-err'),
+           su === null ? null : su,
+           n => n.toFixed(1) + '%');
   setFlash($('s-errors'), errors.toLocaleString(), errors > 0 ? 'flash-err' : 'flash-acn',
            errors, n => Math.round(n).toLocaleString());
   // token totals: use the backend's full-window aggregate (matches the range
