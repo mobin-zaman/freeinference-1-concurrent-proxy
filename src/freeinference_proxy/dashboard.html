@@ -656,6 +656,7 @@ let keyNames = new Set(); // distinct keys offered in the filter dropdown
 let _inTok = 0, _outTok = 0; // running range-filtered token aggregates (set by load, incremented by prependRow; feed the Recent Requests table header chips)
 let _perModel = []; // running per-model aggregate for the current range/key window
 let _last500 = null; // last-500 instrument panel from the backend (drives top stat cluster)
+let _total = 0, _errors = 0; // running range-filtered TOTAL request/error counts (feed the top Total requests / Errors stats)
 
 // ---- Theme (dark is the product look; there is no light mode) ----
 document.documentElement.setAttribute('data-theme', 'dark');
@@ -733,6 +734,7 @@ async function load() {
     const outTok = data.output_tokens || 0;
     _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
     _perModel = data.per_model || [];
+    _total = data.total || 0; _errors = data.errors || 0; // true range-filtered totals for the top stats
     // Last-500 instrument-panel numbers come straight from the backend (the
     // server-side _last500_aggregate). Independent of shownRange/keyName so
     // the top stat cluster reflects the live proxy state.
@@ -753,7 +755,7 @@ async function load() {
     rows.forEach(r => { if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); grew = true; } });
     if (grew) renderKeyFilter();
 
-    updateStats(_last500, rows, inTok, outTok);
+    updateStats(_last500, rows, inTok, outTok, data.total || 0, data.errors || 0);
     renderTable(rows, true);
     renderModels(data.per_model);
     seen = new Set(rows.map(r => r.id));
@@ -766,15 +768,16 @@ async function load() {
   }
 }
 
-function updateStats(l500, rows, inTok, outTok) {
+function updateStats(l500, rows, inTok, outTok, totalCount, errorCount) {
   // Top stat cluster reads from the backend-supplied last-500 aggregate
-  // (l500.total/errors/tokens/queued/avg/throughput). The Recent Requests
-  // table and per-model section continue to use the range-filtered inTok/
-  // outTok for their header chips. The `rows` argument is unused now but
-  // kept in the signature so realtime prependRow can keep calling this with
-  // the same shape — it supplies its own in-memory last-500 instead.
-  const l500Total = l500 && l500.total != null ? l500.total : 0;
-  const l500Errors = l500 && l500.errors != null ? l500.errors : 0;
+  // (l500.total/errors/tokens/queued/avg/throughput), EXCEPT the two "real
+  // total" stats (Total requests, Errors) which use the range-filtered
+  // true totals (totalCount/errorCount) — those are the numbers the user
+  // expects, not the fixed 500-row window. The Recent Requests table and
+  // per-model section continue to use the range-filtered inTok/outTok for
+  // their header chips. The `rows` argument is unused now but kept in the
+  // signature so realtime prependRow can keep calling this with the same
+  // shape — it supplies its own in-memory last-500 instead.
   const l500In = l500 && l500.input_tokens != null ? l500.input_tokens : 0;
   const l500Out = l500 && l500.output_tokens != null ? l500.output_tokens : 0;
   const l500Queued = l500 && l500.queued_count != null ? l500.queued_count : 0;
@@ -782,14 +785,14 @@ function updateStats(l500, rows, inTok, outTok) {
   const l500Avgd = l500 && l500.avg_dur_s != null ? l500.avg_dur_s : 0;
   const l500Thru = l500 && l500.throughput_tok_per_s != null ? l500.throughput_tok_per_s : 0;
 
-  setFlash($('s-total'), l500Total.toLocaleString(), null, l500Total, n => Math.round(n).toLocaleString());
+  setFlash($('s-total'), (totalCount || 0).toLocaleString(), null, totalCount || 0, n => Math.round(n).toLocaleString());
   const thru = l500Thru;
   setFlash($('s-thru'),
            thru > 0 ? thru.toFixed(1) + 'k/s' : '–',
            thru > 0 ? 'flash-quit' : 'flash-acn',
            thru, n => n.toFixed(1) + 'k/s');
-  setFlash($('s-errors'), l500Errors.toLocaleString(), l500Errors > 0 ? 'flash-err' : 'flash-acn',
-           l500Errors, n => Math.round(n).toLocaleString());
+  setFlash($('s-errors'), (errorCount || 0).toLocaleString(), (errorCount || 0) > 0 ? 'flash-err' : 'flash-acn',
+           errorCount || 0, n => Math.round(n).toLocaleString());
   // Token totals: top stat cluster reflects last-500 tokens. The Recent
   // Requests table header chips below use the range-filtered inTok/outTok
   // (passed in separately) so they stay consistent with the table.
@@ -992,6 +995,9 @@ function prependRow(r) {
   // Keep the range-filtered token totals alive across realtime adds.
   _inTok += r.input_tokens || 0;
   _outTok += r.output_tokens || 0;
+  // Keep the running TRUE total/error counts alive across realtime adds.
+  _total += 1;
+  if ((r.status || 0) >= 400) _errors += 1;
   // Bump the per-model table in realtime: merge this row into the existing aggregate
   // (both the model totals and its per-user sub-row).
   const pm = _perModel;
@@ -1025,7 +1031,7 @@ function prependRow(r) {
   l500.throughput_tok_per_s = durSum > 0
     ? (l500.input_tokens + l500.output_tokens) / durSum : 0;
   _last500 = l500;
-  updateStats(l500, rows, _inTok, _outTok);
+  updateStats(l500, rows, _inTok, _outTok, _total, _errors);
   $('ts').textContent = 'live · ' + new Date().toLocaleTimeString();
 }
 
