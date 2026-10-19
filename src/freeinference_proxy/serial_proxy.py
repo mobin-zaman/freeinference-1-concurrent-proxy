@@ -54,6 +54,49 @@ _HOP_BY_HOP = {
 
 _gate = threading.BoundedSemaphore(GATE_LIMIT)
 
+# Per-model pricing, USD per 1M tokens, from the live freeinference.org
+# /v1/models catalog (verified 2026-10-20). key: model id ->
+# {prompt, completion, cache_read} prices/1M. cache_write is priced at the
+# prompt rate (uncached prompt tokens get written back to cache). Unknown
+# models resolve to all-zero pricing (cost 0) so a new upstream model never
+# crashes cost computation.
+MODEL_PRICING: "dict[str, dict[str, float]]" = {
+    "glm-5.3-flash":     {"prompt": 0.3,  "completion": 1.0,  "cache_read": 0.06},
+    "minimax-m3":        {"prompt": 0.5,  "completion": 2.0,  "cache_read": 0.3},
+    "qwen3.6-35b":       {"prompt": 0.08, "completion": 0.28, "cache_read": 0.01},
+    "diffusiongemma":    {"prompt": 0.02, "completion": 0.08, "cache_read": 0.01},
+    "deepseek-v4-flash": {"prompt": 0.44, "completion": 1.32, "cache_read": 0.014},
+    "bge-m3":            {"prompt": 0.0,  "completion": 0.0,  "cache_read": 0.0},
+}
+
+# Zero-pricing fallback for unknown models.
+_ZERO_PRICE = {"prompt": 0.0, "completion": 0.0, "cache_read": 0.0}
+
+
+def _model_price(model: str) -> "dict[str, float]":
+    return MODEL_PRICING.get(model or "", _ZERO_PRICE)
+
+
+def compute_cost(model, in_tok, out_tok, cache_read_tok) -> float:
+    """USD cost of a single request under freeinference's input-cache model.
+
+    Input tokens split into the fraction served by cache (priced at the
+    cache_read rate) and the fraction that had to be written to cache
+    (= prompt - cache_read, priced at the full prompt rate). Completion
+    tokens at the completion rate. All rates per 1M tokens.
+    """
+    p = _model_price(model)
+    in_tok = int(in_tok or 0)
+    out_tok = int(out_tok or 0)
+    cache_read_tok = max(0, min(int(cache_read_tok or 0), in_tok))
+    cache_write_tok = in_tok - cache_read_tok
+    return round(
+        (cache_read_tok * p["cache_read"]
+         + cache_write_tok * p["prompt"]
+         + out_tok * p["completion"]) / 1e6,
+        6,
+    )
+
 
 def _parse_retry_after(value: str):
     """Parse a Retry-After header into seconds (float) or None if absent/invalid."""
@@ -142,6 +185,12 @@ def _db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE requests ADD COLUMN key_name TEXT NOT NULL DEFAULT ''")
     if "model" not in cols:
         conn.execute("ALTER TABLE requests ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+    if "cache_read_tokens" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0")
+    if "cache_write_tokens" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0")
+    if "cost" not in cols:
+        conn.execute("ALTER TABLE requests ADD COLUMN cost REAL NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS api_keys ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -238,35 +287,45 @@ def _daily_input_used(key_name: str) -> int:
 
 
 def record_request(method, path, status, waited_s, dur_s, ua, key_name="",
-                   input_tokens=0, output_tokens=0, model="") -> None:
+                   input_tokens=0, output_tokens=0, model="",
+                   cache_read_tokens=0) -> None:
+    cache_read_tokens = max(0, int(cache_read_tokens or 0))
+    in_tok = int(input_tokens or 0)
+    out_tok = int(output_tokens or 0)
+    cache_write_tokens = max(0, in_tok - cache_read_tokens)
+    cost = compute_cost(model, in_tok, out_tok, cache_read_tokens)
     with _db_lock:
         conn = _db()
         try:
             conn.execute(
                 "INSERT INTO requests (at, ts, method, path, status, waited_s, dur_s,"
-                " user_agent, key_name, input_tokens, output_tokens, model)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " user_agent, key_name, input_tokens, output_tokens, model,"
+                " cache_read_tokens, cache_write_tokens, cost)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), time.strftime("%Y-%m-%d %H:%M:%S"),
                  method, path, status, waited_s, dur_s, ua, key_name or "",
-                 int(input_tokens or 0), int(output_tokens or 0), model or ""),
+                 in_tok, out_tok, model or "",
+                 cache_read_tokens, cache_write_tokens, cost),
             )
             conn.commit()
         finally:
             conn.close()
 
 
-def parse_usage_tokens(body: bytes) -> tuple[int, int]:
-    """Extract input/output tokens from an OpenAI-compatible response body.
+def parse_usage_tokens(body: bytes) -> "tuple[int, int, int]":
+    """Extract input/output/cache-read tokens from an OpenAI-compatible body.
 
-    Reads `usage.prompt_tokens` / `usage.completion_tokens`. Tolerates the SSE
-    framing used by streaming chat completions, where a final `data:` line
-    carries the usage object, and returns (0, 0) on any parse failure."""
+    Reads `usage.prompt_tokens`, `usage.completion_tokens`, and the cache-hit
+    portion `usage.cache_read_tokens` (freeinference) or
+    `usage.prompt_tokens_details.cached_tokens` (OpenAI-style). Tolerates the
+    SSE framing used by streaming chat completions, where a final `data:` line
+    carries the usage object, and returns (0, 0, 0) on any parse failure."""
     if not body:
-        return 0, 0
+        return 0, 0, 0
     try:
         text = body.decode("utf-8", "replace")
     except Exception:
-        return 0, 0
+        return 0, 0, 0
     # Non-streaming JSON, or an SSE line carrying the usage payload.
     candidates = []
     if text.lstrip().startswith("{"):
@@ -275,7 +334,7 @@ def parse_usage_tokens(body: bytes) -> tuple[int, int]:
         try:
             candidates.append(json.loads(text))
         except (json.JSONDecodeError, ValueError):
-            return 0, 0
+            return 0, 0, 0
     else:
         for line in text.splitlines():
             if line.startswith("data:"):
@@ -288,9 +347,16 @@ def parse_usage_tokens(body: bytes) -> tuple[int, int]:
     for obj in candidates:
         usage = obj.get("usage") if isinstance(obj, dict) else None
         if isinstance(usage, dict):
-            return (int(usage.get("prompt_tokens") or 0),
-                    int(usage.get("completion_tokens") or 0))
-    return 0, 0
+            prompt = int(usage.get("prompt_tokens") or 0)
+            completion = int(usage.get("completion_tokens") or 0)
+            cache_read = int(usage.get("cache_read_tokens")
+                             or usage.get("cached_tokens") or 0)
+            if not cache_read:
+                details = usage.get("prompt_tokens_details")
+                if isinstance(details, dict):
+                    cache_read = int(details.get("cached_tokens") or 0)
+            return prompt, completion, cache_read
+    return 0, 0, 0
 
 
 def parse_request_model(body: bytes) -> str:
@@ -552,33 +618,48 @@ class Handler(BaseHTTPRequestHandler):
                     tok = {}
                     for r in conn.execute(
                             "SELECT key_name, COALESCE(SUM(input_tokens),0) AS it,"
-                            " COALESCE(SUM(output_tokens),0) AS ot"
+                            " COALESCE(SUM(output_tokens),0) AS ot,"
+                            " COALESCE(SUM(cache_read_tokens),0) AS cr,"
+                            " COALESCE(SUM(cache_write_tokens),0) AS cw,"
+                            " COALESCE(SUM(cost),0) AS cost"
                             " FROM requests WHERE key_name != ''" + rngclause +
                             " GROUP BY key_name", rngpar):
-                        tok[r["key_name"]] = (r["it"], r["ot"])
+                        tok[r["key_name"]] = {
+                            "it": r["it"], "ot": r["ot"], "cr": r["cr"],
+                            "cw": r["cw"], "cost": r["cost"],
+                        }
                     # Per-key PER-MODEL token breakdown within the same window.
                     bymodel = {}
                     for r in conn.execute(
                             "SELECT key_name, model, COALESCE(SUM(input_tokens),0) AS it,"
-                            " COALESCE(SUM(output_tokens),0) AS ot, COUNT(*) AS n"
+                            " COALESCE(SUM(output_tokens),0) AS ot, COUNT(*) AS n,"
+                            " COALESCE(SUM(cache_read_tokens),0) AS cr,"
+                            " COALESCE(SUM(cache_write_tokens),0) AS cw,"
+                            " COALESCE(SUM(cost),0) AS cost"
                             " FROM requests WHERE key_name != '' AND model != ''" + rngclause +
                             " GROUP BY key_name, model", rngpar):
                         bymodel.setdefault(r["key_name"], []).append({
                             "model": r["model"], "input_tokens": int(r["it"]),
                             "output_tokens": int(r["ot"]), "requests": int(r["n"]),
+                            "cache_read_tokens": int(r["cr"]),
+                            "cache_write_tokens": int(r["cw"]),
+                            "cost": float(r["cost"] or 0),
                         })
                     for r in conn.execute(
                             "SELECT id, name, role, enabled, created_at, last_used_at, key_hash,"
                             " daily_input_limit, blocked_models FROM api_keys ORDER BY id"):
                         h = r["key_hash"]
-                        it, ot = tok.get(r["name"], (0, 0))
+                        t = tok.get(r["name"], {"it": 0, "ot": 0, "cr": 0, "cw": 0, "cost": 0})
                         rows.append({
                             "id": r["id"], "name": r["name"], "role": r["role"],
                             "enabled": bool(r["enabled"]), "created_at": r["created_at"],
                             "last_used_at": r["last_used_at"],
                             "key_last4": h[-4:],
                             "masked": "sk-…" + h[-4:],
-                            "input_tokens": int(it), "output_tokens": int(ot),
+                            "input_tokens": int(t["it"]), "output_tokens": int(t["ot"]),
+                            "cache_read_tokens": int(t["cr"]),
+                            "cache_write_tokens": int(t["cw"]),
+                            "cost": float(t["cost"] or 0),
                             "daily_input_limit": r["daily_input_limit"],
                             "blocked_models": r["blocked_models"] or "",
                             "models": bymodel.get(r["name"], []),
@@ -625,7 +706,8 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             rows = conn.execute(
                                 "SELECT id, at, ts, method, path, status, waited_s, dur_s, user_agent,"
-                                " key_name, input_tokens, output_tokens, model"
+                                " key_name, input_tokens, output_tokens, model,"
+                                " cache_read_tokens, cache_write_tokens, cost"
                                 " FROM requests WHERE id > ? ORDER BY id ASC", (last_id,)).fetchall()
                         finally:
                             conn.close()
@@ -641,6 +723,9 @@ class Handler(BaseHTTPRequestHandler):
                             "dur_s": r["dur_s"], "user_agent": r["user_agent"],
                             "key_name": r["key_name"],
                             "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"],
+                            "cache_read_tokens": r["cache_read_tokens"],
+                            "cache_write_tokens": r["cache_write_tokens"],
+                            "cost": r["cost"],
                             "model": r["model"],
                         }
                         self.wfile.write(("data: %s\n\n" % json.dumps(payload)).encode())
@@ -707,13 +792,16 @@ class Handler(BaseHTTPRequestHandler):
                 conn = _db()
                 rows = conn.execute(
                     f"SELECT id, ts, method, path, status, waited_s, dur_s, user_agent,"
-                    f" key_name, input_tokens, output_tokens, model FROM requests {where}"
+                    f" key_name, input_tokens, output_tokens, model,"
+                    f" cache_read_tokens, cache_write_tokens, cost FROM requests {where}"
                     f" ORDER BY id DESC LIMIT ?", params + [limit]).fetchall()
                 total, errs = conn.execute(
                     "SELECT COUNT(*), SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)"
                     f" FROM requests {where}", params).fetchone()
-                tin, tout = conn.execute(
-                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)"
+                tin, tout, cr, cw, cost_sum = conn.execute(
+                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),"
+                    " COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),"
+                    " COALESCE(SUM(cost),0)"
                     f" FROM requests {where}", params).fetchone()
                 avgq = conn.execute(
                     "SELECT COALESCE(AVG(waited_s),0) FROM requests"
@@ -721,23 +809,34 @@ class Handler(BaseHTTPRequestHandler):
                 # Per-model aggregate over the same window/filter: for each model,
                 # a per-user (key) breakdown plus the model totals.
                 mwhere = (where + " AND model != ''") if where else "WHERE model != ''"
-                model_map = {}  # model -> {requests, input_tokens, output_tokens, users:[...]}
+                model_map = {}  # model -> {requests, input_tokens, output_tokens, cost, users:[...]}
                 for r in conn.execute(
                         "SELECT model, key_name, COUNT(*) AS n,"
                         " COALESCE(SUM(input_tokens),0) AS it,"
-                        " COALESCE(SUM(output_tokens),0) AS ot"
+                        " COALESCE(SUM(output_tokens),0) AS ot,"
+                        " COALESCE(SUM(cache_read_tokens),0) AS cr,"
+                        " COALESCE(SUM(cache_write_tokens),0) AS cw,"
+                        " COALESCE(SUM(cost),0) AS cost"
                         f" FROM requests {mwhere} GROUP BY model, key_name", params):
                     m = model_map.setdefault(r["model"], {
                         "model": r["model"], "requests": 0, "input_tokens": 0,
-                        "output_tokens": 0, "users": [],
+                        "output_tokens": 0, "cost": 0.0,
+                        "cache_read_tokens": 0, "cache_write_tokens": 0,
+                        "users": [],
                     })
                     m["requests"] += int(r["n"])
                     m["input_tokens"] += int(r["it"])
                     m["output_tokens"] += int(r["ot"])
+                    m["cost"] += float(r["cost"] or 0)
+                    m["cache_read_tokens"] += int(r["cr"])
+                    m["cache_write_tokens"] += int(r["cw"])
                     key = r["key_name"] or "<unkeyed>"
                     m["users"].append({
                         "key_name": key, "requests": int(r["n"]),
                         "input_tokens": int(r["it"]), "output_tokens": int(r["ot"]),
+                        "cost": float(r["cost"] or 0),
+                        "cache_read_tokens": int(r["cr"]),
+                        "cache_write_tokens": int(r["cw"]),
                     })
                 for m in model_map.values():
                     m["users"].sort(key=lambda u: -u["requests"])
@@ -754,6 +853,9 @@ class Handler(BaseHTTPRequestHandler):
                 "total": total, "errors": errs or 0,
                 "range": rng,
                 "input_tokens": int(tin or 0), "output_tokens": int(tout or 0),
+                "cache_read_tokens": int(cr or 0),
+                "cache_write_tokens": int(cw or 0),
+                "cost": float(cost_sum or 0),
                 "avg_queue_s": round(float(avgq or 0), 3),
                 "per_model": sorted(per_model, key=lambda m: -m["requests"]),
                 **last500,
@@ -779,7 +881,8 @@ class Handler(BaseHTTPRequestHandler):
         inside the proxy's `_db_lock` block.
         """
         rows = conn.execute(
-            "SELECT status, waited_s, dur_s, input_tokens, output_tokens"
+            "SELECT status, waited_s, dur_s, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_write_tokens, cost"
             " FROM requests ORDER BY id DESC LIMIT 500"
         ).fetchall()
         n = len(rows)
@@ -787,6 +890,8 @@ class Handler(BaseHTTPRequestHandler):
             return {
                 "last500_total": 0, "last500_errors": 0,
                 "last500_input_tokens": 0, "last500_output_tokens": 0,
+                "last500_cache_read_tokens": 0, "last500_cache_write_tokens": 0,
+                "last500_cost": 0.0,
                 "last500_queued_count": 0,
                 "last500_avg_queue_s": 0.0, "last500_avg_dur_s": 0.0,
                 "last500_throughput_tok_per_s": 0.0,
@@ -794,6 +899,9 @@ class Handler(BaseHTTPRequestHandler):
         errs = sum(1 for r in rows if r["status"] >= 400)
         tin = sum(int(r["input_tokens"] or 0) for r in rows)
         tout = sum(int(r["output_tokens"] or 0) for r in rows)
+        cr = sum(int(r["cache_read_tokens"] or 0) for r in rows)
+        cw = sum(int(r["cache_write_tokens"] or 0) for r in rows)
+        cost = round(sum(float(r["cost"] or 0) for r in rows), 6)
         queued = sum(1 for r in rows if (r["waited_s"] or 0) > 0)
         avgq = sum(float(r["waited_s"] or 0) for r in rows) / n
         avgd = sum(float(r["dur_s"] or 0) for r in rows) / n
@@ -802,6 +910,8 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "last500_total": n, "last500_errors": errs,
             "last500_input_tokens": tin, "last500_output_tokens": tout,
+            "last500_cache_read_tokens": cr, "last500_cache_write_tokens": cw,
+            "last500_cost": cost,
             "last500_queued_count": queued,
             "last500_avg_queue_s": round(avgq, 3),
             "last500_avg_dur_s": round(avgd, 3),
@@ -987,7 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
                     log(json.dumps({"event": "client_disconnected", "path": self.path}))
                     return  # finally still releases the gate
                 self.wfile.write(b"0\r\n\r\n")  # terminate the chunked stream
-                in_tok, out_tok = parse_usage_tokens(bytes(tail))
+                in_tok, out_tok, cr_tok = parse_usage_tokens(bytes(tail))
             else:
                 data = upstream.content  # buffer non-streaming bodies (models, errors)
                 self.send_header("Content-Length", str(len(data)))
@@ -997,19 +1107,21 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     log(json.dumps({"event": "client_disconnected", "path": self.path}))
                     return
-                in_tok, out_tok = parse_usage_tokens(data)
+                in_tok, out_tok, cr_tok = parse_usage_tokens(data)
 
             ua = fwd_headers.get("User-Agent", "")
+            cost = compute_cost(model, in_tok, out_tok, cr_tok)
             log(json.dumps({
                 "event": "request", "method": self.command, "path": self.path,
                 "status": upstream.status_code, "waited_s": waited_s,
                 "dur_s": round(time.monotonic() - t_api, 3),
                 "user_agent": ua, "key_name": key_name, "model": model,
                 "input_tokens": in_tok, "output_tokens": out_tok,
+                "cache_read_tokens": cr_tok, "cost": cost,
             }))
             record_request(self.command, self.path, upstream.status_code,
                            waited_s, round(time.monotonic() - t_api, 3), ua,
-                           key_name, in_tok, out_tok, model)
+                           key_name, in_tok, out_tok, model, cr_tok)
         finally:
             _gate.release()
 

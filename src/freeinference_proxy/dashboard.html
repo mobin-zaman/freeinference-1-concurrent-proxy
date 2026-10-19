@@ -344,6 +344,10 @@
   .waited .w { color: var(--quit); }
   .tok { color: var(--quit); }
   .tok.zero { color: var(--muted); opacity: .6; }
+  .cch { color: var(--accent); }
+  .cch.zero { color: var(--muted); opacity: .6; }
+  .cost { color: var(--ok); }
+  .cost.zero { color: var(--muted); opacity: .6; }
   .waived { color: var(--muted); }
 
   /* Empty + stagger on first paint */
@@ -496,6 +500,8 @@
         "method   time"
         "tokens   queued"
         "dur      out"
+        "cache    cachew"
+        "cost     cost"
         "model    model"
         "key      key"
         "ua       ua";
@@ -518,9 +524,12 @@
     tbody tr td:nth-child(6) { grid-area: dur;    font-size: 10px; }
     tbody tr td:nth-child(7) { grid-area: tokens; font-size: 10px; color: var(--quit); }
     tbody tr td:nth-child(8) { grid-area: out;    font-size: 10px; color: var(--quit); }
-    tbody tr td:nth-child(9) { grid-area: model; font-size: 10px; color: var(--accent); max-width: 100%; }
-    tbody tr td:nth-child(10) { grid-area: key; font-size: 10px; color: var(--accent); }
-    tbody tr td:nth-child(11) { grid-area: ua;  font-size: 10px; color: var(--muted); }
+    tbody tr td:nth-child(9) { grid-area: cache;  font-size: 10px; color: var(--accent); }
+    tbody tr td:nth-child(10) { grid-area: cachew; font-size: 10px; color: var(--accent); }
+    tbody tr td:nth-child(11) { grid-area: cost;  font-size: 10px; color: var(--ok); }
+    tbody tr td:nth-child(12) { grid-area: model; font-size: 10px; color: var(--accent); max-width: 100%; }
+    tbody tr td:nth-child(13) { grid-area: key; font-size: 10px; color: var(--accent); }
+    tbody tr td:nth-child(14) { grid-area: ua;  font-size: 10px; color: var(--muted); }
 
     /* Inline labels so hidden table headers still read on touch */
     tbody tr td:nth-child(1)::before { content: "time"; }
@@ -529,9 +538,12 @@
     tbody tr td:nth-child(6)::before { content: "dur"; }
     tbody tr td:nth-child(7)::before { content: "in"; }
     tbody tr td:nth-child(8)::before { content: "out"; }
-    tbody tr td:nth-child(9)::before { content: "model"; }
-    tbody tr td:nth-child(10)::before { content: "key: "; }
-    tbody tr td:nth-child(11)::before { content: "ua: "; }
+    tbody tr td:nth-child(9)::before { content: "ch"; }
+    tbody tr td:nth-child(10)::before { content: "cw"; }
+    tbody tr td:nth-child(11)::before { content: "cost"; }
+    tbody tr td:nth-child(12)::before { content: "model"; }
+    tbody tr td:nth-child(13)::before { content: "key: "; }
+    tbody tr td:nth-child(14)::before { content: "ua: "; }
     tbody tr td::before {
       color: var(--muted); opacity: .7; font-size: 9px;
       text-transform: uppercase; letter-spacing: .05em; margin-right: 6px;
@@ -574,6 +586,9 @@
     <div class="stat"><div class="label">Errors (≥400)</div><div class="value err" id="s-errors">–</div></div>
     <div class="stat"><div class="label">Input tokens</div><div class="value quit" id="s-intok">–</div></div>
     <div class="stat"><div class="label">Output tokens</div><div class="value quit" id="s-outtok">–</div></div>
+    <div class="stat"><div class="label">Cost</div><div class="value acn" id="s-cost">–</div><div class="sub">USD · current range</div></div>
+    <div class="stat"><div class="label">Cache hit</div><div class="value quit" id="s-cr">–</div></div>
+    <div class="stat"><div class="label">Cache write</div><div class="value quit" id="s-cw">–</div></div>
     <div class="stat"><div class="label">Queue hits</div><div class="value" id="s-queued">–</div><div class="sub">in last 500</div></div>
     <div class="stat"><div class="label">Avg queue time</div><div class="value quit" id="s-avgq">–</div><div class="sub">last 500</div></div>
     <div class="stat"><div class="label">Avg duration</div><div class="value" id="s-avgdur">–</div><div class="sub">last 500</div></div>
@@ -608,6 +623,7 @@
           <tr>
             <th>Model</th><th class="num">Requests</th>
             <th class="num">In</th><th class="num">Out</th>
+            <th class="num">Cache hit</th><th class="num">Cache write</th><th class="num">Cost</th>
           </tr>
         </thead>
         <tbody id="model-rows"></tbody>
@@ -624,6 +640,7 @@
         </span>
         <span class="chip">in: <b id="c-intok">0</b></span>
         <span class="chip">out: <b id="c-outtok">0</b></span>
+        <span class="chip">cost: <b id="c-cost">$0</b></span>
       </div>
     </div>
     <div class="table-wrap">
@@ -632,10 +649,12 @@
           <tr>
             <th>Time</th><th>Method</th><th>Path</th>
             <th class="num">Status</th><th class="num">Queued</th>
-            <th class="num">Dur</th><th class="num">In</th><th class="num">Out</th><th>Model</th><th>Key</th><th>User-Agent</th>
+            <th class="num">Dur</th><th class="num">In</th><th class="num">Out</th>
+            <th class="num">Cache hit</th><th class="num">Cache write</th><th class="num">Cost</th>
+            <th>Model</th><th>Key</th><th>User-Agent</th>
           </tr>
         </thead>
-        <tbody id="rows"><tr class="empty"><td colspan="11" style="border:none">Loading…</td></tr></tbody>
+        <tbody id="rows"><tr class="empty"><td colspan="14" style="border:none">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -654,6 +673,7 @@ let rangeStart = 0; // epoch seconds, 0 = no lower bound (all time)
 let keyName = 'all'; // active app-key filter, 'all' = every key
 let keyNames = new Set(); // distinct keys offered in the filter dropdown
 let _inTok = 0, _outTok = 0; // running range-filtered token aggregates (set by load, incremented by prependRow; feed the Recent Requests table header chips)
+let _cost = 0, _cacheRead = 0, _cacheWrite = 0; // running range-filtered cost + cache aggregates (top stat cards + prependRow)
 let _perModel = []; // running per-model aggregate for the current range/key window
 let _last500 = null; // last-500 instrument panel from the backend (drives top stat cluster)
 let _total = 0, _errors = 0; // running range-filtered TOTAL request/error counts (feed the top Total requests / Errors stats)
@@ -706,6 +726,13 @@ function fmtTok(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
   return String(n);
 }
+function fmtCost(n) {
+  n = n || 0;
+  if (n >= 1000) return '$' + (n / 1000).toFixed(2) + 'k';
+  if (n >= 1) return '$' + n.toFixed(2);
+  if (n > 0) return '$' + n.toFixed(4);
+  return '$0';
+}
 
 function renderKeyFilter() {
   const sel = $('key-select');
@@ -732,7 +759,11 @@ async function load() {
     const rows = data.requests || [];
     const inTok = data.input_tokens || 0;    // range-filtered aggregate, not the loaded-row subset
     const outTok = data.output_tokens || 0;
+    const cost = data.cost || 0;
+    const cacheRead = data.cache_read_tokens || 0;
+    const cacheWrite = data.cache_write_tokens || 0;
     _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
+    _cost = cost; _cacheRead = cacheRead; _cacheWrite = cacheWrite;
     _perModel = data.per_model || [];
     _total = data.total || 0; _errors = data.errors || 0; // true range-filtered totals for the top stats
     // Last-500 instrument-panel numbers come straight from the backend (the
@@ -755,7 +786,7 @@ async function load() {
     rows.forEach(r => { if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); grew = true; } });
     if (grew) renderKeyFilter();
 
-    updateStats(_last500, rows, inTok, outTok, data.total || 0, data.errors || 0);
+    updateStats(_last500, rows, inTok, outTok, cost, cacheRead, cacheWrite, data.total || 0, data.errors || 0);
     renderTable(rows, true);
     renderModels(data.per_model);
     seen = new Set(rows.map(r => r.id));
@@ -768,16 +799,17 @@ async function load() {
   }
 }
 
-function updateStats(l500, rows, inTok, outTok, totalCount, errorCount) {
+function updateStats(l500, rows, inTok, outTok, cost, cacheRead, cacheWrite, totalCount, errorCount) {
   // Top stat cluster reads from the backend-supplied last-500 aggregate
-  // (l500.total/errors/tokens/queued/avg/throughput), EXCEPT the two "real
-  // total" stats (Total requests, Errors) which use the range-filtered
-  // true totals (totalCount/errorCount) — those are the numbers the user
-  // expects, not the fixed 500-row window. The Recent Requests table and
-  // per-model section continue to use the range-filtered inTok/outTok for
-  // their header chips. The `rows` argument is unused now but kept in the
-  // signature so realtime prependRow can keep calling this with the same
-  // shape — it supplies its own in-memory last-500 instead.
+  // (l500.total/errors/tokens/queued/avg/throughput), EXCEPT the range-filtered
+  // "real total" stats: Total requests, Errors, Input/Output tokens, Cost, and
+  // Cache hit/write all use the range-filtered true totals that follow the
+  // operator's browse window — those are the numbers the user expects, not the
+  // fixed 500-row window. The Recent Requests table and per-model section
+  // continue to use the same range-filtered values. The `rows` argument is
+  // unused now but kept in the signature so realtime prependRow can keep
+  // calling this with the same shape — it supplies its own in-memory last-500
+  // instead.
   const l500Queued = l500 && l500.queued_count != null ? l500.queued_count : 0;
   const l500Avgq = l500 && l500.avg_queue_s != null ? l500.avg_queue_s : 0;
   const l500Avgd = l500 && l500.avg_dur_s != null ? l500.avg_dur_s : 0;
@@ -794,12 +826,15 @@ function updateStats(l500, rows, inTok, outTok, totalCount, errorCount) {
   // Token totals: top stat cluster reflects the selected range (same source as
   // Total/Errors above — inTok/outTok, the range-filtered sums). The Recent
   // Requests table header chips below use the same inTok/outTok so they stay
-  // consistent with the table. last500 token aggregates remain only in the
-  // instrument panel fields (throughput/queue/avg) via l500.
+  // consistent with the table.
   setFlash($('s-intok'), fmtTok(inTok), inTok ? 'flash-quit' : 'flash-acn', inTok, n => Math.round(n).toLocaleString(), fmtTok(inTok));
   setFlash($('s-outtok'), fmtTok(outTok), outTok ? 'flash-quit' : 'flash-acn', outTok, n => Math.round(n).toLocaleString(), fmtTok(outTok));
+  setFlash($('s-cost'), fmtCost(cost), cost > 0 ? 'flash-acn' : 'flash-acn', cost, n => n.toFixed(6) + '', fmtCost(cost));
+  setFlash($('s-cr'), fmtTok(cacheRead) + ' tok', cacheRead ? 'flash-quit' : 'flash-acn', cacheRead, n => Math.round(n).toLocaleString(), fmtTok(cacheRead) + ' tok');
+  setFlash($('s-cw'), fmtTok(cacheWrite) + ' tok', cacheWrite ? 'flash-quit' : 'flash-acn', cacheWrite, n => Math.round(n).toLocaleString(), fmtTok(cacheWrite) + ' tok');
   $('c-intok').textContent = fmtTok(inTok);
   $('c-outtok').textContent = fmtTok(outTok);
+  $('c-cost').textContent = fmtCost(cost);
   // Queue hits: denominator is always 500 (the last-500 window), not rows.length.
   setFlash($('s-queued'), `${l500Queued}/500`, null, l500Queued, n => `${n}/500`);
   // avg queue time and avg duration over the last-500 rows
@@ -901,10 +936,12 @@ function setFlash(el, text, cls, num, fmt, landText) {
 function rowHtml(r, isNew) {
   const min = r.waited_s > 0.001;
   const it = r.input_tokens || 0, ot = r.output_tokens || 0;
+  const cr = r.cache_read_tokens || 0, cw = r.cache_write_tokens || 0;
+  const cost = r.cost || 0;
   const tokCls = (it || ot) ? '' : ' zero';
   const model = r.model ? '<span class="model-chip">' + esc(r.model) + '</span>'
     : (r.path.indexOf('/models') !== -1
-        ? '<span class="model-chip probe">' + esc(r.path.replace(/^\/*api\/*|^\/*v1\/*/, '')) + '</span>'
+        ? '<span class="model-chip probe">' + esc(r.path.replace(/^\/+api\/+|^\/+v1\/+/, '')) + '</span>'
         : '<span class="model-none">–</span>');
   const key = r.key_name && r.key_name !== 'admin' ? '<span class="key-chip">' + esc(r.key_name) + '</span>' : (r.key_name ? esc(r.key_name) : '<span class="key-none">–</span>');
   const nir = r.key_name && r.key_name.toLowerCase().indexOf('nirjhor') !== -1 ? ' row-nirjhor' : '';
@@ -918,6 +955,9 @@ function rowHtml(r, isNew) {
     <td class="num dur">${r.dur_s.toFixed(2)}s</td>
     <td class="num tok${tokCls}">${it ? fmtTok(it) : '–'}</td>
     <td class="num tok${tokCls}">${ot ? fmtTok(ot) : '–'}</td>
+    <td class="num cch${cr ? '' : ' zero'}">${cr ? fmtTok(cr) : '–'}</td>
+    <td class="num cch${cw ? '' : ' zero'}">${cw ? fmtTok(cw) : '–'}</td>
+    <td class="num cost${cost ? '' : ' zero'}">${cost ? fmtCost(cost) : '–'}</td>
     <td class="modelc" title="${esc(r.model || '')}">${model}</td>
     <td class="mono keyc" title="${esc(r.key_name || '')}">${key}</td>
     <td class="mono ua" title="${esc(r.user_agent)}">${esc(r.user_agent)}</td>
@@ -928,7 +968,7 @@ function renderTable(rows, full) {
   const tbody = $('rows');
   tbody.className = full ? '' : 'no-anim';
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" class="empty">No requests recorded yet. Fire some calls at 127.0.0.1:8788.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => rowHtml(r, full)).join('');
@@ -949,6 +989,9 @@ function renderModels(perModel) {
           <td class="num">${(u.requests || 0).toLocaleString()}</td>
           <td class="num tok">${fmtTok(u.input_tokens || 0)}</td>
           <td class="num tok">${fmtTok(u.output_tokens || 0)}</td>
+          <td class="num cch">${fmtTok(u.cache_read_tokens || 0)}</td>
+          <td class="num cch">${fmtTok(u.cache_write_tokens || 0)}</td>
+          <td class="num cost">${fmtCost(u.cost || 0)}</td>
         </tr>`).join('');
     return `
       <tr class="model-totals">
@@ -956,6 +999,9 @@ function renderModels(perModel) {
         <td class="num">${(m.requests || 0).toLocaleString()}</td>
         <td class="num tok">${fmtTok(m.input_tokens || 0)}</td>
         <td class="num tok">${fmtTok(m.output_tokens || 0)}</td>
+        <td class="num cch">${fmtTok(m.cache_read_tokens || 0)}</td>
+        <td class="num cch">${fmtTok(m.cache_write_tokens || 0)}</td>
+        <td class="num cost">${fmtCost(m.cost || 0)}</td>
       </tr>
       ${users}`;
   }).join('');
@@ -995,6 +1041,9 @@ function prependRow(r) {
   // Keep the range-filtered token totals alive across realtime adds.
   _inTok += r.input_tokens || 0;
   _outTok += r.output_tokens || 0;
+  _cost += r.cost || 0;
+  _cacheRead += r.cache_read_tokens || 0;
+  _cacheWrite += r.cache_write_tokens || 0;
   // Keep the running TRUE total/error counts alive across realtime adds.
   _total += 1;
   if ((r.status || 0) >= 400) _errors += 1;
@@ -1003,12 +1052,14 @@ function prependRow(r) {
   const pm = _perModel;
   if (r.model) {
     let e = pm.find(m => m.model === r.model);
-    if (!e) { e = { model: r.model, requests: 0, input_tokens: 0, output_tokens: 0, users: [] }; pm.push(e); }
+    if (!e) { e = { model: r.model, requests: 0, input_tokens: 0, output_tokens: 0, cost: 0, cache_read_tokens: 0, cache_write_tokens: 0, users: [] }; pm.push(e); }
     e.requests += 1; e.input_tokens += r.input_tokens || 0; e.output_tokens += r.output_tokens || 0;
+    e.cost += r.cost || 0; e.cache_read_tokens += r.cache_read_tokens || 0; e.cache_write_tokens += r.cache_write_tokens || 0;
     const k = r.key_name || '<unkeyed>';
     let u = e.users.find(x => x.key_name === k);
-    if (!u) { u = { key_name: k, requests: 0, input_tokens: 0, output_tokens: 0 }; e.users.push(u); }
+    if (!u) { u = { key_name: k, requests: 0, input_tokens: 0, output_tokens: 0, cost: 0, cache_read_tokens: 0, cache_write_tokens: 0 }; e.users.push(u); }
     u.requests += 1; u.input_tokens += r.input_tokens || 0; u.output_tokens += r.output_tokens || 0;
+    u.cost += r.cost || 0; u.cache_read_tokens += r.cache_read_tokens || 0; u.cache_write_tokens += r.cache_write_tokens || 0;
     e.users.sort((a, b) => b.requests - a.requests);
     renderModels(pm);
   }
@@ -1031,7 +1082,7 @@ function prependRow(r) {
   l500.throughput_tok_per_s = durSum > 0
     ? (l500.input_tokens + l500.output_tokens) / durSum : 0;
   _last500 = l500;
-  updateStats(l500, rows, _inTok, _outTok, _total, _errors);
+  updateStats(l500, rows, _inTok, _outTok, _cost, _cacheRead, _cacheWrite, _total, _errors);
   $('ts').textContent = 'live · ' + new Date().toLocaleTimeString();
 }
 
@@ -1098,12 +1149,13 @@ function renderKey(k) {
   const role = k.role === 'admin' ? '<span class="k-role admin">admin</span>' : '<span class="k-role">llm</span>';
   const state = en ? '<span class="k-on">● enabled</span>' : '<span class="k-off-disabled">● disabled</span>';
   const it = k.input_tokens || 0, ot = k.output_tokens || 0;
-  const toks = (it || ot)
-    ? `<span style="font-size:10px;color:var(--fg)"><span style="color:var(--accent)">in ${fmtTok(it)}</span> · <span style="color:var(--quit)">out ${fmtTok(ot)}</span></span>`
+  const cr = k.cache_read_tokens || 0, cw = k.cache_write_tokens || 0, cost = k.cost || 0;
+  const toks = (it || ot || cr || cw || cost)
+    ? `<span style="font-size:10px;color:var(--fg)"><span style="color:var(--accent)">in ${fmtTok(it)}</span> · <span style="color:var(--quit)">out ${fmtTok(ot)}</span> · <span style="color:var(--accent)">ch ${fmtTok(cr)}</span> · <span style="color:var(--accent)">cw ${fmtTok(cw)}</span> · <span style="color:var(--ok)">$${fmtCost(cost).replace('$','')}</span></span>`
     : '<span class="k-none-mini" style="font-size:10px;color:var(--muted);opacity:.6">no usage</span>';
   // Per-model breakdown chips for this key within the active range.
   const kModels = (k.models || [])
-    .map(m => `<span class="k-model" title="${esc(m.model)} — in ${fmtTok(m.input_tokens || 0)} · out ${fmtTok(m.output_tokens || 0)} · ${(m.requests || 0)} req"><b>${esc(m.model)}</b> ${fmtTok((m.input_tokens || 0) + (m.output_tokens || 0))} tok · ${m.requests || 0}×</span>`)
+    .map(m => `<span class="k-model" title="${esc(m.model)} — in ${fmtTok(m.input_tokens || 0)} · out ${fmtTok(m.output_tokens || 0)} · ch ${fmtTok(m.cache_read_tokens || 0)} · cw ${fmtTok(m.cache_write_tokens || 0)} · $${fmtCost(m.cost || 0).replace('$','')} · ${(m.requests || 0)} req"><b>${esc(m.model)}</b> ${fmtTok((m.input_tokens || 0) + (m.output_tokens || 0))} tok · ${fmtCost(m.cost || 0)} · ${m.requests || 0}×</span>`)
     .join('');
   // Blocked-model restriction chip(s) for this key.
   const blocked = (k.blocked_models || '')

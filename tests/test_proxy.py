@@ -111,9 +111,10 @@ class UpstreamHandler(BaseHTTPRequestHandler):
             payload = json.dumps({"ok": True, "path": self.path}).encode()
             if self.headers.get("X-Want-Usage"):
                 payload = json.dumps({
-                    "ok": True, "path": self.path,
-                    "usage": {"prompt_tokens": 11, "completion_tokens": 22},
-                }).encode()
+                                "ok": True, "path": self.path,
+                                "usage": {"prompt_tokens": 11, "completion_tokens": 22,
+                                          "cache_read_tokens": 4},
+                            }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("X-Upstream-Saw", str(self.headers.get("X-Marker", "")))
@@ -206,7 +207,8 @@ def db_rows(path, limit=100):
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             "SELECT method, path, status, waited_s, dur_s, user_agent, key_name,"
-            " input_tokens, output_tokens, model"
+            " input_tokens, output_tokens, model,"
+            " cache_read_tokens, cache_write_tokens, cost"
             " FROM requests ORDER BY id LIMIT ?", (limit,)).fetchall()]
     finally:
         conn.close()
@@ -508,6 +510,9 @@ def test_tokens_recorded_from_buffered_response(proxy_server, upstream):
     rows = wait_for_rows(proxy_server["db"], 1)
     assert rows[0]["input_tokens"] == 11
     assert rows[0]["output_tokens"] == 22
+    # cache_read surfaced by the fixture; cache_write = prompt - cache_read.
+    assert rows[0]["cache_read_tokens"] == 4
+    assert rows[0]["cache_write_tokens"] == 7
 
 
 def test_tokens_recorded_from_streaming_response(proxy_server, upstream):
@@ -1038,9 +1043,14 @@ def test_post_model_captured_and_per_model_aggregate(proxy_server, upstream):
     pm = {m["model"]: m for m in body["per_model"]}
     assert pm["glm-5.3-flash"]["requests"] == 1
     # per-model breakdown includes the per-user sub-rows keyed by key_name.
-    assert pm["glm-5.3-flash"]["users"] == [
-        {"key_name": "trent", "requests": 1, "input_tokens": 0, "output_tokens": 0}
-    ]
+    u = pm["glm-5.3-flash"]["users"][0]
+    assert u["key_name"] == "trent" and u["requests"] == 1
+    assert u["input_tokens"] == 0 and u["output_tokens"] == 0
+    assert u["cache_read_tokens"] == 0 and u["cache_write_tokens"] == 0
+    assert u["cost"] == 0.0
+    # range totals carry cache + cost.
+    assert body["cache_read_tokens"] == 0 and body["cache_write_tokens"] == 0
+    assert body["cost"] == 0.0
 
     # per-key per-model breakdown from the keys endpoint
     keys = {k["name"]: k for k in requests.get(f"{base}/__api/keys", headers=_admin(base), timeout=10).json()["keys"]}
