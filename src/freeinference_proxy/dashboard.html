@@ -778,8 +778,6 @@ function updateStats(l500, rows, inTok, outTok, totalCount, errorCount) {
   // their header chips. The `rows` argument is unused now but kept in the
   // signature so realtime prependRow can keep calling this with the same
   // shape — it supplies its own in-memory last-500 instead.
-  const l500In = l500 && l500.input_tokens != null ? l500.input_tokens : 0;
-  const l500Out = l500 && l500.output_tokens != null ? l500.output_tokens : 0;
   const l500Queued = l500 && l500.queued_count != null ? l500.queued_count : 0;
   const l500Avgq = l500 && l500.avg_queue_s != null ? l500.avg_queue_s : 0;
   const l500Avgd = l500 && l500.avg_dur_s != null ? l500.avg_dur_s : 0;
@@ -793,11 +791,13 @@ function updateStats(l500, rows, inTok, outTok, totalCount, errorCount) {
            thru, n => n.toFixed(1) + 'k/s');
   setFlash($('s-errors'), (errorCount || 0).toLocaleString(), (errorCount || 0) > 0 ? 'flash-err' : 'flash-acn',
            errorCount || 0, n => Math.round(n).toLocaleString());
-  // Token totals: top stat cluster reflects last-500 tokens. The Recent
-  // Requests table header chips below use the range-filtered inTok/outTok
-  // (passed in separately) so they stay consistent with the table.
-  setFlash($('s-intok'), fmtTok(l500In), l500In ? 'flash-quit' : 'flash-acn', l500In, n => Math.round(n).toLocaleString(), fmtTok(l500In));
-  setFlash($('s-outtok'), fmtTok(l500Out), l500Out ? 'flash-quit' : 'flash-acn', l500Out, n => Math.round(n).toLocaleString(), fmtTok(l500Out));
+  // Token totals: top stat cluster reflects the selected range (same source as
+  // Total/Errors above — inTok/outTok, the range-filtered sums). The Recent
+  // Requests table header chips below use the same inTok/outTok so they stay
+  // consistent with the table. last500 token aggregates remain only in the
+  // instrument panel fields (throughput/queue/avg) via l500.
+  setFlash($('s-intok'), fmtTok(inTok), inTok ? 'flash-quit' : 'flash-acn', inTok, n => Math.round(n).toLocaleString(), fmtTok(inTok));
+  setFlash($('s-outtok'), fmtTok(outTok), outTok ? 'flash-quit' : 'flash-acn', outTok, n => Math.round(n).toLocaleString(), fmtTok(outTok));
   $('c-intok').textContent = fmtTok(inTok);
   $('c-outtok').textContent = fmtTok(outTok);
   // Queue hits: denominator is always 500 (the last-500 window), not rows.length.
