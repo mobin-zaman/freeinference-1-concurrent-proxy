@@ -390,7 +390,6 @@
       box-shadow: 0 0 0 1px color-mix(in srgb, var(--pet-c) 45%, transparent);
     }
   }
-  .petdex-pet.focused { z-index: 100; }
   .petdex-pet.focused .pet-wrap {
     background: color-mix(in srgb, var(--pet-c) 14%, transparent);
     box-shadow: 0 0 0 1.5px var(--pet-c);
@@ -789,13 +788,14 @@ let _petSel = null;    // key currently focused on the petdex floor
 let _petKeys = [];     // captured keys, insertion order
 // Per-pet wander state {x,y,vx,vy,step,...}. Positions persist across re-renders so
 // load()/new keys never teleport the survivors.
-const _petState = new Map(); // key -> { x, y, vx, vy, step, w, h, el, art }
+const _petState = new Map(); // key -> { x, y, vx, vy, step, w, h, el, wrap }
 let _petRAF = 0;            // live rAF handle (0 = loop not running)
 let _petLastT = 0;          // last frame timestamp (ms)
 let _petFW = 0, _petFH = 0; // cached floor size, re-measured every ~2s
 let _petMeasuredAt = 0;
 function _petReduced() {
-  return matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!_petReduced.mql) _petReduced.mql = matchMedia('(prefers-reduced-motion: reduce)');
+  return _petReduced.mql.matches;
 }
 function _petColor(key) {
   let h = 0;
@@ -859,7 +859,7 @@ function _petSpawn(floor, key) {
   wrap.addEventListener('animationend', () => wrap.classList.remove('hop')); // resume bobbing
   el.appendChild(wrap);
   el.addEventListener('click', () => { _petSel = key; _petFocus(key); });
-  const st = { x: 0, y: 0, vx: 0, vy: 0, step: 0, w: 58, h: 58, el, art: wrap };
+  const st = { x: 0, y: 0, vx: 0, vy: 0, step: 0, w: 58, h: 58, el, wrap };
   _petState.set(key, st);
   floor.appendChild(el);
   if (_petReduced()) return; // renderPets() lays reduced-motion pets out statically
@@ -872,7 +872,11 @@ function _petSpawn(floor, key) {
 }
 // Update the floor's info line + focused ring without a re-render.
 function _petFocus(key) {
-  _petState.forEach((st, k) => st.el.classList.toggle('focused', k === key));
+  _petState.forEach((st, k) => {
+    st.el.classList.toggle('focused', k === key);
+    // Lift the focused pet above activity-ordered peers; inline beats the CSS class.
+    if (k === key) st.el.style.zIndex = '100';
+  });
   const hud = document.getElementById('pd-hud');
   if (hud) hud.innerHTML =
     `<span class="hud-no">No. <b>${_petDexNo(key)}</b></span>` +
@@ -912,7 +916,8 @@ function renderPets() {
   if (!_petKeys.length) {
     wrap.innerHTML = '<div class="empty">No keys seen yet — pets appear as requests land.</div>';
     for (const k of [..._petState.keys()]) _petDespawn(k);
-    _petRAF = 0;
+    if (_petRAF) { cancelAnimationFrame(_petRAF); _petRAF = 0; }
+    _petLastT = 0;
     return;
   }
   // Default focus to the busiest pet (activity-based), preserving manual pick.
@@ -964,9 +969,9 @@ function petBounce(key) {
   if (!st) return; // petdex floor not rendered yet
   if (_petSel === key) _petFocus(key); // keep the info-line count in sync
   if (!_petReduced()) {
-    st.art.classList.remove('hop');
-    void st.art.offsetWidth; // restart the hop animation, in place
-    st.art.classList.add('hop');
+    st.wrap.classList.remove('hop');
+    void st.wrap.offsetWidth; // restart the hop animation, in place
+    st.wrap.classList.add('hop');
   }
 }
 
