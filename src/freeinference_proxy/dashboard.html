@@ -331,65 +331,88 @@
   .user-indent::before { content: "↳ "; color: var(--muted); margin-right: 4px; }
   .key-none { color: var(--muted); opacity: .6; }
   td.path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Petdex (petdex.dev-style): a large featured pet screen plus a gallery grid
-     of pet cards. Pets are assigned deterministically by key-name hash; their
-     counts are ACTIVITY-BASED (real per-key request totals for the active
-     range, sourced from the API), not a per-browser-session counter — a live
-     request focuses and bounces that key's pet and keeps the total in sync. */
+  /* Petdex floor (petdex-desktop style): one bounded roaming panel instead of
+     a featured card + thumbnail grid. Pets are assigned deterministically by
+     key-name hash; their counts are ACTIVITY-BASED (real per-key request
+     totals for the active range, sourced from the API), not a per-browser
+     session counter — a live request makes that key's pet hop in place and
+     keeps the infoline total in sync. */
   .petdex { display: flex; flex-direction: column; gap: 12px; margin: 2px 0 6px; }
-  .petdex-feature {
-    display: flex; align-items: center; gap: 20px;
+  .petdex-floor {
+    position: relative; height: 230px; overflow: hidden;
     background:
-      linear-gradient(135deg, color-mix(in srgb, var(--pet-c) 18%, transparent), transparent 60%),
+      radial-gradient(140% 110% at 50% 0%, color-mix(in srgb, var(--pet-c) 9%, transparent), transparent 62%),
       var(--card);
-    border: 1px solid var(--border-soft); border-top: 3px solid var(--pet-c);
-    border-radius: 18px; padding: 22px 24px; box-shadow: var(--shadow);
-    position: relative; overflow: hidden;
+    border: 1px solid var(--border-soft);
+    border-top: 3px solid var(--pet-c);
+    border-radius: 18px; box-shadow: var(--shadow);
   }
-  .petdex-feature::after {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background: radial-gradient(120% 120% at 12% 18%, color-mix(in srgb, var(--pet-c) 14%, transparent), transparent 55%);
+  /* Info line for the focused pet (name + activity count) */
+  .petdex-floor-hud {
+    position: absolute; left: 12px; top: 9px; z-index: 200;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    pointer-events: none; max-width: calc(100% - 24px);
   }
-  .petdex-art { font-size: 76px; line-height: 1; flex-shrink: 0; z-index: 1;
-    filter: drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
-  .petdex-art .pet-img { max-height: 96px; width: auto; image-rendering: pixelated; }
-  .petdex-art.bounce { animation: petJump 480ms var(--ease-out); }
-  .petdex-info { display: flex; flex-direction: column; gap: 4px; z-index: 1; min-width: 0; }
-  .petdex-dexno { font-size: 10px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
-  .petdex-dexno b { color: var(--pet-c); }
-  .petdex-name { font-size: 22px; font-weight: 800; color: var(--fg); text-transform: none; }
-  .petdex-count { font-size: 12px; color: var(--pet-c); font-variant-numeric: tabular-nums; }
-  .petdex-count small { color: var(--muted); }
-  .petdex-arrows { margin-left: auto; display: flex; gap: 8px; z-index: 1; }
-  .petdex-arrows .toggle { font-size: 12px; padding: 6px 12px; }
-  .petdex-gallery {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px;
+  .petdex-floor-hud .hud-no {
+    font-size: 10px; color: var(--muted); letter-spacing: .08em;
+    text-transform: uppercase; white-space: nowrap;
   }
-  .petdex-card {
-    display: flex; flex-direction: column; align-items: center; gap: 6px;
-    padding: 14px 10px 12px; cursor: pointer;
-    background: var(--card); border: 1px solid var(--border-soft); border-radius: 14px;
-    transition: transform 140ms var(--ease-out), border-color 160ms ease, box-shadow 160ms ease;
+  .petdex-floor-hud .hud-no b { color: var(--pet-c); }
+  .petdex-floor-hud .hud-name {
+    font-size: 14px; font-weight: 700; color: var(--fg);
+    max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .petdex-card .card-emoji { font-size: 34px; line-height: 1; filter: drop-shadow(0 4px 10px rgba(0,0,0,.3)); }
-  .petdex-card .card-emoji .pet-img { max-height: 56px; width: auto; image-rendering: pixelated; }
-  .petdex-card .card-name { font-size: 10px; color: var(--fg); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .petdex-card .card-count { font-size: 10px; color: var(--pet-c); font-variant-numeric: tabular-nums; }
-  .petdex-card.active { border-color: var(--pet-c); box-shadow: 0 0 0 1px var(--pet-c), var(--shadow); transform: translateY(-2px); }
-  .petdex-card:active { transform: scale(0.96); }
-  @media (hover: hover) and (pointer: fine) { .petdex-card:hover { border-color: var(--accent-2); transform: translateY(-2px); } }
-  @media (max-width: 560px) {
-    .petdex-feature { gap: 14px; padding: 16px 16px; }
-    .petdex-art { font-size: 56px; }
-    .petdex-name { font-size: 17px; }
-    .petdex-arrows { flex-direction: column; gap: 6px; }
+  .petdex-floor-hud .hud-count {
+    font-size: 11px; color: var(--pet-c);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
   }
-  @keyframes petJump {
+  .petdex-floor-hud .hud-count small { color: var(--muted); font-size: 10px; }
+  /* A roaming pet: absolutely positioned node; JS drives the outer transform
+     (position), the inner .pet-wrap keeps its own CSS idle bob + hop so the
+     two animations compose without touching each other. */
+  .petdex-pet {
+    position: absolute; left: 0; top: 0; z-index: 5;
+    cursor: pointer; will-change: transform;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  .petdex-pet .pet-wrap {
+    display: block; padding: 5px 7px; border-radius: 14px;
+    transition: box-shadow 160ms ease, background 160ms ease;
+    animation: petBob var(--bob-dur, 3.2s) ease-in-out var(--bob-delay, 0s) infinite;
+  }
+  .petdex-pet .pet-img {
+    display: block; max-height: 46px; width: auto;
+    image-rendering: pixelated; filter: drop-shadow(0 6px 12px rgba(0,0,0,.4));
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .petdex-pet:hover .pet-wrap {
+      background: color-mix(in srgb, var(--pet-c) 12%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--pet-c) 45%, transparent);
+    }
+  }
+  .petdex-pet.focused { z-index: 100; }
+  .petdex-pet.focused .pet-wrap {
+    background: color-mix(in srgb, var(--pet-c) 14%, transparent);
+    box-shadow: 0 0 0 1.5px var(--pet-c);
+  }
+  /* Inline reaction to a live request: quick hop at the pet's current spot.
+     Pet-hopping animation temporarily replaces the idle bob, then resumes. */
+  .petdex-pet .pet-wrap.hop { animation: petHop 460ms var(--ease-out); }
+  @media (max-width: 560px) { .petdex-floor { height: 190px; } }
+  @media (prefers-reduced-motion: reduce) {
+    /* Frozen wander: no bob/hop, pets sit still; tap + hover still work. */
+    .petdex-floor .petdex-pet .pet-wrap { animation: none !important; }
+    .petdex-floor .petdex-pet .pet-wrap { transition: none; }
+  }
+  @keyframes petBob {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50%      { transform: translateY(-4px) rotate(2deg); }
+  }
+  @keyframes petHop {
     0%   { transform: translateY(0) scale(1); }
-    18%  { transform: translateY(-16px) scale(1.1); }
-    36%  { transform: translateY(0) scale(0.96); }
-    52%  { transform: translateY(-8px) scale(1.05); }
-    68%  { transform: translateY(0) scale(1); }
+    22%  { transform: translateY(-13px) scale(1.12); }
+    45%  { transform: translateY(0) scale(0.94); }
+    68%  { transform: translateY(-6px) scale(1.04); }
     100% { transform: translateY(0) scale(1); }
   }
   td.path .q { color: var(--muted); }
@@ -747,13 +770,14 @@ let _perModel = []; // running per-model aggregate for the current range/key win
 let _last500 = null; // last-500 instrument panel from the backend (drives top stat cluster)
 let _total = 0, _errors = 0; // running range-filtered TOTAL request/error counts (feed the top Total requests / Errors stats)
 
-// ---- Petdex (petdex.dev-style): a large featured pet screen plus a gallery
-// grid of pet cards. Each API key has a pet (emoji + accent) assigned
-// deterministically by name hash. Counts are ACTIVITY-BASED — real per-key
-// request totals for the active range, seeded from the API's per_model
-// aggregate on every load() and kept in sync by live SSE requests — NOT a
-// per-browser-session counter. A live request focuses and bounces that key's
-// pet; ◀/▶ or clicking a gallery card focuses any pet.
+// ---- Petdex floor (petdex-desktop style): one bounded roaming panel. Each
+// API key has a pet (real petdex sprite + accent) assigned deterministically
+// by name hash; the pets wander freely inside the floor. Counts are
+// ACTIVITY-BASED — real per-key request totals for the active range, seeded
+// from the API's per_model aggregate on every load() and kept in sync by live
+// SSE requests — NOT a per-browser-session counter. A live request makes THAT
+// key's pet hop in place at its current position (no floor re-render);
+// clicking a pet focuses it in the floor's info line.
 // Real Petdex sprites (base64-embedded, from https://petdex.dev — offline-safe):
 const _PET_SLUGS = ["boba", "doraemon", "eve", "mallow", "noir-webling"];
 const _PET_SPRITE_IDX = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1];
@@ -761,8 +785,18 @@ const _PET_SPRITES = {"boba": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAC4
 
 // _petArt(key) -> an <img> using the real petdex sprite for that key.
 let _petCounts = {}; // key -> request count within the active range (activity)
-let _petSel = null;    // key currently focused on the petdex featured screen
+let _petSel = null;    // key currently focused on the petdex floor
 let _petKeys = [];     // captured keys, insertion order
+// Per-pet wander state {x,y,vx,vy,step,...}. Positions persist across re-renders so
+// load()/new keys never teleport the survivors.
+const _petState = new Map(); // key -> { x, y, vx, vy, step, w, h, el, art }
+let _petRAF = 0;            // live rAF handle (0 = loop not running)
+let _petLastT = 0;          // last frame timestamp (ms)
+let _petFW = 0, _petFH = 0; // cached floor size, re-measured every ~2s
+let _petMeasuredAt = 0;
+function _petReduced() {
+  return matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
 function _petColor(key) {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
@@ -799,73 +833,140 @@ function petDexKeyOrder() {
   // with the first-seen order of keyNames (avoids the old O(n^2) filter+includes).
   _petKeys = [...keyNames];
 }
+function _petDespawn(key) {
+  const st = _petState.get(key);
+  if (st && st.el && st.el.parentNode) st.el.parentNode.removeChild(st.el);
+  _petState.delete(key);
+}
+function _petRetarget(st, initial) {
+  // Gentle drift: pick a semi-random direction + speed for the next leg.
+  const spd = 9 + Math.random() * 26; // px/s — slow enough to stay calm
+  const dir = Math.random() * Math.PI * 2;
+  st.vx = Math.cos(dir) * spd;
+  st.vy = Math.sin(dir) * spd * 0.35; // vertical motion stays calmer than horizontal
+  st.step = (initial ? 500 : 1400) + Math.random() * 2600; // ms in this leg
+}
+function _petSpawn(floor, key) {
+  const el = document.createElement('div');
+  el.className = 'petdex-pet';
+  el.setAttribute('data-pet', key); // setAttribute — never interpolated into markup
+  el.style.setProperty('--pet-c', _petColor(key));
+  const wrap = document.createElement('span');
+  wrap.className = 'pet-wrap';
+  wrap.style.setProperty('--bob-dur', (2.6 + Math.random() * 1.8).toFixed(2) + 's');
+  wrap.style.setProperty('--bob-delay', (-Math.random() * 3).toFixed(2) + 's');
+  wrap.innerHTML = _petArt(key, 'pet-img'); // base64 data URI from the static sprite table
+  wrap.addEventListener('animationend', () => wrap.classList.remove('hop')); // resume bobbing
+  el.appendChild(wrap);
+  el.addEventListener('click', () => { _petSel = key; _petFocus(key); });
+  const st = { x: 0, y: 0, vx: 0, vy: 0, step: 0, w: 58, h: 58, el, art: wrap };
+  _petState.set(key, st);
+  floor.appendChild(el);
+  if (_petReduced()) return; // renderPets() lays reduced-motion pets out statically
+  _petFW = floor.clientWidth || 600;
+  _petFH = floor.clientHeight || 230;
+  st.x = 6 + Math.random() * Math.max(1, _petFW - st.w - 12);
+  st.y = 12 + Math.random() * Math.max(1, _petFH - st.h - 18);
+  _petRetarget(st, true);
+  el.style.transform = `translate3d(${st.x.toFixed(1)}px, ${st.y.toFixed(1)}px, 0)`;
+}
+// Update the floor's info line + focused ring without a re-render.
+function _petFocus(key) {
+  _petState.forEach((st, k) => st.el.classList.toggle('focused', k === key));
+  const hud = document.getElementById('pd-hud');
+  if (hud) hud.innerHTML =
+    `<span class="hud-no">No. <b>${_petDexNo(key)}</b></span>` +
+    `<span class="hud-name" title="${esc(key)}">${esc(key)}</span>` +
+    `<span class="hud-count">${(_petCounts[key] || 0).toLocaleString()} <small>requests · ${_petRangeLabel()}</small></span>`;
+}
+function _petTick(t) {
+  const floor = document.querySelector('#pets .petdex-floor');
+  if (!floor) { _petRAF = 0; return; }
+  if (!_petMeasuredAt || t - _petMeasuredAt > 2000) {
+    _petFW = floor.clientWidth || 600;
+    _petFH = floor.clientHeight || 230;
+    _petMeasuredAt = t;
+  }
+  const dt = Math.min(64, t - _petLastT) / 1000; // cap dt so tab-switch jumps don't fling pets
+  _petLastT = t;
+  _petState.forEach(st => {
+    st.step -= dt * 1000;
+    if (st.step <= 0) _petRetarget(st, false);
+    st.x += st.vx * dt;
+    st.y += st.vy * dt;
+    // Bounce softly off the floor bounds — stay inside the panel.
+    const mx = Math.max(6, _petFW - st.w - 6);
+    const my = Math.max(12, _petFH - st.h - 12);
+    if (st.x < 6)  { st.x = 6;  st.vx =  Math.abs(st.vx) || 1; }
+    if (st.x > mx) { st.x = mx; st.vx = -Math.abs(st.vx) || -1; }
+    if (st.y < 12) { st.y = 12; st.vy =  Math.abs(st.vy) || 1; }
+    if (st.y > my) { st.y = my; st.vy = -Math.abs(st.vy) || -1; }
+    st.el.style.transform = `translate3d(${st.x.toFixed(1)}px, ${st.y.toFixed(1)}px, 0)`;
+  });
+  _petRAF = requestAnimationFrame(_petTick);
+}
 function renderPets() {
   const wrap = $('pets');
   if (!wrap) return;
   petDexKeyOrder();
-  if (!_petKeys.length) { wrap.innerHTML = '<div class="empty">No keys seen yet — pets appear as requests land.</div>'; return; }
+  if (!_petKeys.length) {
+    wrap.innerHTML = '<div class="empty">No keys seen yet — pets appear as requests land.</div>';
+    for (const k of [..._petState.keys()]) _petDespawn(k);
+    _petRAF = 0;
+    return;
+  }
   // Default focus to the busiest pet (activity-based), preserving manual pick.
-  if (!_petSel || !keyNames.has(_petSel)) {
+  if (!_petSel || !_petKeys.includes(_petSel)) {
     _petSel = _petKeys.slice().sort((a, b) => (_petCounts[b] || 0) - (_petCounts[a] || 0))[0];
   }
-  const active = _petSel;
-  const c = _petColor(active);
-  // Gallery cards sorted by activity (most requests first), like installs.
-  const cards = _petKeys.slice().sort((a, b) => (_petCounts[b] || 0) - (_petCounts[a] || 0))
-    .map(k => {
-      const on = k === active;
-      return `<div class="petdex-card${on ? ' active' : ''}" data-pet="${esc(k)}" style="--pet-c:${_petColor(k)}">
-                <span class="card-emoji">${_petArt(k, "pet-img")}</span>
-                <span class="card-name" title="${esc(k)}">${esc(k)}</span>
-                <span class="card-count">${(_petCounts[k] || 0).toLocaleString()}</span>
-              </div>`;
-    }).join('');
-  wrap.innerHTML = `<div class="petdex">
-    <div class="petdex-feature" style="--pet-c:${c}">
-      <div class="petdex-art" id="pd-art">${_petArt(active, "pet-img big")}</div>
-      <div class="petdex-info">
-        <div class="petdex-dexno">No. <b>${_petDexNo(active)}</b> · ${esc(active)}</div>
-        <div class="petdex-name">${esc(active)}</div>
-        <div class="petdex-count">${(_petCounts[active] || 0).toLocaleString()} <small>requests · ${_petRangeLabel()}</small></div>
-      </div>
-      <div class="petdex-arrows">
-        <button class="toggle" id="pd-prev" title="Previous pet">◀</button>
-        <button class="toggle" id="pd-next" title="Next pet">▶</button>
-      </div>
-    </div>
-    <div class="petdex-gallery">${cards}</div>
-  </div>`;
-  $('pd-prev').addEventListener('click', () => pagePet(-1));
-  $('pd-next').addEventListener('click', () => pagePet(1));
-  wrap.querySelectorAll('.petdex-card').forEach(el =>
-    el.addEventListener('click', () => { _petSel = el.getAttribute('data-pet'); renderPets(); }));
-}
-function pagePet(dir) {
-  petDexKeyOrder();
-  if (!_petKeys.length) return;
-  const i = _petKeys.indexOf(_petSel);
-  _petSel = _petKeys[(i + dir + _petKeys.length) % _petKeys.length];
-  renderPets();
+  // Build the floor once; afterwards diff by key so ongoing positions persist
+  // instead of teleporting on every load()/new-key tick.
+  let floor = wrap.querySelector('.petdex-floor');
+  if (!floor) {
+    for (const k of [..._petState.keys()]) _petDespawn(k);
+    wrap.innerHTML = `<div class="petdex-floor" style="--pet-c:${_petColor(_petSel)}"><div class="petdex-floor-hud" id="pd-hud"></div></div>`;
+    floor = wrap.querySelector('.petdex-floor');
+  } else {
+    floor.style.setProperty('--pet-c', _petColor(_petSel));
+  }
+  const present = new Set();
+  _petKeys.forEach(k => { present.add(k); if (!_petState.has(k)) _petSpawn(floor, k); });
+  for (const k of [..._petState.keys()]) if (!present.has(k)) _petDespawn(k);
+  // Overlap is fine; stacking follows activity order (busiest pet on top).
+  _petKeys.slice().sort((a, b) => (_petCounts[b] || 0) - (_petCounts[a] || 0))
+    .forEach((k, i, arr) => { const st = _petState.get(k); if (st) st.el.style.zIndex = String(5 + arr.length - i); });
+  if (_petReduced()) {
+    // Frozen wander: lay pets out in staggered, non-overlapping slots; the
+    // click/focus + hover affordances still work.
+    const w = floor.clientWidth || 320, n = Math.max(1, _petKeys.length);
+    _petKeys.forEach((k, i) => {
+      const st = _petState.get(k); if (!st) return;
+      st.x = 8 + ((i + 0.5) / n) * Math.max(1, w - st.w - 20);
+      st.y = i % 2 ? 118 : 44;
+      st.el.style.transform = `translate3d(${st.x.toFixed(1)}px, ${st.y.toFixed(1)}px, 0)`;
+    });
+    if (_petRAF) { cancelAnimationFrame(_petRAF); _petRAF = 0; }
+  } else if (!_petRAF) {
+    _petLastT = performance.now();
+    _petRAF = requestAnimationFrame(_petTick);
+  }
+  _petFocus(_petSel);
 }
 function petBounce(key) {
   if (!key) return;
   _petCounts[key] = (_petCounts[key] || 0) + 1;
-  // Only re-render when a brand-new key appears (needs a fresh card). For keys
-  // already captured, update count + bounce in place so the user's manual ◀/▶
-  // selection isn't stolen on every request (multi-key bursts stay stable).
+  // Only spawn a pet node when a brand-new key appears (it wasn't roaming yet);
+  // otherwise react inline at the pet's current position — the floor itself is
+  // never re-rendered per request. _petKeys is kept aligned with keyNames by
+  // petDexKeyOrder().
   if (!_petKeys.includes(key)) { _petSel = key; renderPets(); }
-  const art = document.getElementById('pd-art');
-  if (!art) return; // petdex not rendered yet
-  const card = document.querySelector(`.petdex-card[data-pet="${CSS.escape ? CSS.escape(key) : key.replace(/"/g, '')}"]`);
-  if (card) card.querySelector('.card-count').textContent = (_petCounts[key] || 0).toLocaleString();
-  // Only the currently-focused pet's featured art plays the big bounce; the
-  // others update their card count (activity is visible, focus is preserved).
-  if (_petSel === key) {
-    const cnt = document.querySelector('.petdex-count');
-    if (cnt) cnt.textContent = (_petCounts[key] || 0).toLocaleString() + ' <small>requests · ' + _petRangeLabel() + '</small>';
-    art.classList.remove('bounce');
-    void art.offsetWidth; // restart the CSS animation
-    art.classList.add('bounce');
+  const st = _petState.get(key);
+  if (!st) return; // petdex floor not rendered yet
+  if (_petSel === key) _petFocus(key); // keep the info-line count in sync
+  if (!_petReduced()) {
+    st.art.classList.remove('hop');
+    void st.art.offsetWidth; // restart the hop animation, in place
+    st.art.classList.add('hop');
   }
 }
 
