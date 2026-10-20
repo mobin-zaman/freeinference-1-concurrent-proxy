@@ -331,6 +331,28 @@
   .user-indent::before { content: "↳ "; color: var(--muted); margin-right: 4px; }
   .key-none { color: var(--muted); opacity: .6; }
   td.path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Pets strip — one pet per API key; the pet bounces when its key serves a live request */
+  .pets { display: flex; flex-wrap: wrap; gap: 10px; margin: 2px 0 6px; }
+  .pet {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    min-width: 74px; padding: 10px 12px 8px;
+    background: var(--card); border: 1px solid var(--border-soft); border-top: 3px solid var(--pet-c);
+    border-radius: 14px; box-shadow: var(--shadow);
+    transition: transform 160ms var(--ease-out), border-color 200ms ease;
+  }
+  .pet .pet-emoji { font-size: 30px; line-height: 1; transition: transform 120ms var(--ease-out); }
+  .pet .pet-name { font-size: 10px; color: var(--fg); max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pet .pet-count { font-size: 10px; font-weight: 700; color: var(--pet-c); font-variant-numeric: tabular-nums; }
+  @keyframes petJump {
+    0%   { transform: translateY(0) scale(1); }
+    18%  { transform: translateY(-14px) scale(1.08); }
+    36%  { transform: translateY(0) scale(0.96); }
+    52%  { transform: translateY(-7px) scale(1.04); }
+    68%  { transform: translateY(0) scale(1); }
+    100% { transform: translateY(0) scale(1); }
+  }
+  .pet.bounce .pet-emoji { animation: petJump 480ms var(--ease-out); }
+  .pet.bounce { border-color: var(--accent-2); }
   td.path .q { color: var(--muted); }
   .status {
     display: inline-block; min-width: 40px; text-align: center;
@@ -596,6 +618,14 @@
 
   <div class="section">
     <div class="section-head">
+      <h2>Pets</h2>
+      <div class="chips"><span class="chip">each key's pet bounces on a live request</span></div>
+    </div>
+    <div class="pets" id="pets"><div class="empty">Loading pets…</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
       <h2>API keys</h2>
       <div class="chips"><span class="chip" id="k-count">0</span></div>
     </div>
@@ -677,6 +707,47 @@ let _cost = 0, _cacheRead = 0, _cacheWrite = 0; // running range-filtered cost +
 let _perModel = []; // running per-model aggregate for the current range/key window
 let _last500 = null; // last-500 instrument panel from the backend (drives top stat cluster)
 let _total = 0, _errors = 0; // running range-filtered TOTAL request/error counts (feed the top Total requests / Errors stats)
+
+// ---- Pets: one pet per API key; a key's pet bounces when it serves a request ----
+// Emoji + accent are assigned deterministically from the key name via a stable
+// hash, so a key always shows the same pet across reloads. `_petCounts` tracks
+// per-key live request counts within this browser session.
+const _PET_POOL = ['🐾', '🐶', '🐱', '🦊', '🐼', '🐸', '🦉', '🐙', '🦄', '🐢', '🐹', '🐰'];
+const _petCounts = {}; // key -> session-in-progress request count
+function _petColor(key) {
+  // Stable hue per key name; keeps each pet distinct but theme-consistent.
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  const hues = [210, 160, 280, 35, 200, 330, 100, 15];
+  return 'hsl(' + (hues[h % hues.length]) + ' 62% 58%)';
+}
+function _petEmoji(key) {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return _PET_POOL[h % _PET_POOL.length];
+}
+function renderPets() {
+  const wrap = $('pets');
+  if (!wrap) return;
+  const keys = [...keyNames].sort();
+  if (!keys.length) { wrap.innerHTML = '<div class="empty">No keys seen yet — pets appear as requests land.</div>'; return; }
+  wrap.innerHTML = keys.map(k =>
+    `<div class="pet" data-pet="${esc(k)}" style="--pet-c:${_petColor(k)}">
+       <span class="pet-emoji">${_petEmoji(k)}</span>
+       <span class="pet-name">${esc(k)}</span>
+       <span class="pet-count">${_petCounts[k] || 0}</span>
+     </div>`).join('');
+}
+function petBounce(key) {
+  if (!key) return;
+  _petCounts[key] = (_petCounts[key] || 0) + 1;
+  const tile = document.querySelector(`.pet[data-pet="${CSS.escape ? CSS.escape(key) : key.replace(/"/g, '')}"]`);
+  if (!tile) return; // pet strip not yet rendered for this key
+  tile.querySelector('.pet-count').textContent = _petCounts[key];
+  tile.classList.remove('bounce');
+  void tile.offsetWidth; // restart the CSS animation
+  tile.classList.add('bounce');
+}
 
 // ---- Theme (dark is the product look; there is no light mode) ----
 document.documentElement.setAttribute('data-theme', 'dark');
@@ -784,11 +855,12 @@ async function load() {
     // implicit 'hermes' key, which is never in the api_keys table).
     let grew = false;
     rows.forEach(r => { if (r.key_name && !keyNames.has(r.key_name)) { keyNames.add(r.key_name); grew = true; } });
-    if (grew) renderKeyFilter();
+    if (grew) { renderKeyFilter(); renderPets(); }
 
     updateStats(_last500, rows, inTok, outTok, cost, cacheRead, cacheWrite, data.total || 0, data.errors || 0);
     renderTable(rows, true);
     renderModels(data.per_model);
+    renderPets(); // reflect the full known key set on every load (idempotent; preserves _petCounts)
     seen = new Set(rows.map(r => r.id));
     const maxId = rows.length ? Math.max(...rows.map(r => r.id)) : 0;
     window._maxSeenId = maxId;
@@ -1014,6 +1086,11 @@ function prependRow(r) {
   if (seen.has(r.id)) return;
   seen.add(r.id);
   window._maxSeenId = Math.max(window._maxSeenId || 0, r.id); // resume SSE later from here
+  // The pet bounces for EVERY request regardless of the active range/key
+  // filter — a request for key X (even one hidden by the current window)
+  // still animates pet X, so the indicator reflects real proxy traffic.
+  if (r.key_name && keyNames.has(r.key_name)) petBounce(r.key_name);
+  else if (r.key_name) { keyNames.add(r.key_name); renderPets(); petBounce(r.key_name); }
   if (seen.size > 400) {
     const first = seen.values().next().value;
     seen.delete(first);
@@ -1115,7 +1192,7 @@ async function loadKeys() {
     const keys = data.keys || [];
     let grew = false;
     keys.forEach(k => { if (k.name && !keyNames.has(k.name)) { keyNames.add(k.name); grew = true; } });
-    if (grew) renderKeyFilter();
+    if (grew) { renderKeyFilter(); renderPets(); }
     $('k-count').textContent = keys.length + (keys.length === 1 ? ' key' : ' keys');
     if (!keys.length) {
       grid.innerHTML = '<div class="empty">No API keys yet. Create one below.</div>';
