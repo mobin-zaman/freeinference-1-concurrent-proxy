@@ -904,7 +904,8 @@ function _petSetState(st, next, reduced) {
   st.sprite.style.backgroundImage = `url(${uri})`;
   st.frame = 0;
   st.sprite.style.backgroundPosition = '0px 0px';
-  _petSpriteTick(st, performance.now(), reduced); // draw frame 0 immediately
+  st.frameAt = performance.now(); // so the immediate draw below stays on frame 0
+  _petSpriteTick(st, st.frameAt, reduced); // draw frame 0 immediately
 }
 function _petTick(t) {
   const floor = document.querySelector('#pets .petdex-floor');
@@ -966,8 +967,9 @@ function renderPets() {
   let floor = wrap.querySelector('.petdex-floor');
   if (!floor) {
     for (const k of [..._petState.keys()]) _petDespawn(k);
-    wrap.innerHTML = `<div class="petdex-floor" style="--pet-c:${_petColor(_petSel)}"><div class="petdex-floor-hud" id="pd-hud"></div></div>`;
+    wrap.innerHTML = '<div class="petdex-floor"><div class="petdex-floor-hud" id="pd-hud"></div></div>';
     floor = wrap.querySelector('.petdex-floor');
+    floor.style.setProperty('--pet-c', _petColor(_petSel)); // setProperty — never interpolated into markup
   } else {
     floor.style.setProperty('--pet-c', _petColor(_petSel));
   }
@@ -1004,7 +1006,7 @@ function petBounce(key, status) {
   // otherwise react inline at the pet's current position — the floor itself is
   // never re-rendered per request. _petKeys is kept aligned with keyNames by
   // petDexKeyOrder(). Native mapping: a request's status flips the pet's sprite
-  // STATE — success >=200 && <400 => jumping (celebrate), error >=400 => failed.
+  // STATE — not an error (<400) => jumping (celebrate), >=400 => failed.
   // The transient state reverts to locomotion on the next id/run tick.
   if (!_petKeys.includes(key)) { _petSel = key; renderPets(); }
   const st = _petState.get(key);
@@ -1016,8 +1018,6 @@ function petBounce(key, status) {
   // Give the jump/fail a moment of screen time, then fall back to locomotion
   // on the next _petTick (clean, no long setTimeout).
   st.transientUntil = performance.now() + 700; // ~1.9 jump loops of screen time
-  st.frameAt = 0; // force immediate frame advance so the state visibly fires
-  _petSpriteTick(st, performance.now(), false);
 }
 
 // ---- Theme (dark is the product look; there is no light mode) ----
