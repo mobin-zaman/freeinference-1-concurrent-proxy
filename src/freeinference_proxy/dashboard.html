@@ -331,46 +331,62 @@
   .user-indent::before { content: "↳ "; color: var(--muted); margin-right: 4px; }
   .key-none { color: var(--muted); opacity: .6; }
   td.path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Petdex — a single Pokedex-style screen. One pet shown large; ◀/▶ pages
-     through the captured keys; the slot strip below is the dex collection.
-     A live request focuses that key's pet and bounces it. */
-  .petdex { display: flex; flex-direction: column; gap: 10px; margin: 2px 0 6px; }
-  .petdex-screen {
-    display: flex; align-items: center; gap: 14px;
-    background: var(--card); border: 1px solid var(--border-soft);
-    border-top: 4px solid var(--pet-c); border-radius: 16px;
-    padding: 16px 18px; box-shadow: var(--shadow);
+  /* Petdex (petdex.dev-style): a large featured pet screen plus a gallery grid
+     of pet cards. Pets are assigned deterministically by key-name hash; their
+     counts are ACTIVITY-BASED (real per-key request totals for the active
+     range, sourced from the API), not a per-browser-session counter — a live
+     request focuses and bounces that key's pet and keeps the total in sync. */
+  .petdex { display: flex; flex-direction: column; gap: 12px; margin: 2px 0 6px; }
+  .petdex-feature {
+    display: flex; align-items: center; gap: 20px;
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--pet-c) 18%, transparent), transparent 60%),
+      var(--card);
+    border: 1px solid var(--border-soft); border-top: 3px solid var(--pet-c);
+    border-radius: 18px; padding: 22px 24px; box-shadow: var(--shadow);
+    position: relative; overflow: hidden;
   }
-  .petdex-art {
-    font-size: 52px; line-height: 1; width: 84px; text-align: center; flex-shrink: 0;
+  .petdex-feature::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 120% at 12% 18%, color-mix(in srgb, var(--pet-c) 14%, transparent), transparent 55%);
   }
+  .petdex-art { font-size: 76px; line-height: 1; flex-shrink: 0; z-index: 1;
+    filter: drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
   .petdex-art.bounce { animation: petJump 480ms var(--ease-out); }
-  .petdex-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .petdex-dexno { font-size: 10px; color: var(--muted); letter-spacing: .06em; }
+  .petdex-info { display: flex; flex-direction: column; gap: 4px; z-index: 1; min-width: 0; }
+  .petdex-dexno { font-size: 10px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
   .petdex-dexno b { color: var(--pet-c); }
-  .petdex-name { font-size: 18px; font-weight: 700; color: var(--fg); text-transform: none; }
+  .petdex-name { font-size: 22px; font-weight: 800; color: var(--fg); text-transform: none; }
   .petdex-count { font-size: 12px; color: var(--pet-c); font-variant-numeric: tabular-nums; }
-  .petdex-arrows { margin-left: auto; display: flex; gap: 8px; }
+  .petdex-count small { color: var(--muted); }
+  .petdex-arrows { margin-left: auto; display: flex; gap: 8px; z-index: 1; }
   .petdex-arrows .toggle { font-size: 12px; padding: 6px 12px; }
-  .petdex-slots { display: flex; flex-wrap: wrap; gap: 8px; }
-  .petdex-slot {
-    display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer;
-    background: var(--card-2); border: 1px solid var(--border-soft); border-radius: 999px;
-    font-size: 11px; color: var(--muted);
-    transition: transform 140ms var(--ease-out), border-color 160ms ease, color 160ms ease;
+  .petdex-gallery {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px;
   }
-  .petdex-slot .slot-emoji { font-size: 16px; }
-  .petdex-slot .slot-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .petdex-slot .slot-num { font-variant-numeric: tabular-nums; color: var(--pet-c); }
-  .petdex-slot.active { border-color: var(--pet-c); color: var(--fg); background: rgba(255,255,255,0.04); }
-  .petdex-slot.active .slot-emoji { transform: scale(1.15); }
-  .petdex-slot:active { transform: scale(0.95); }
-  @media (hover: hover) and (pointer: fine) { .petdex-slot:hover { border-color: var(--accent-2); color: var(--fg); } }
+  .petdex-card {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 14px 10px 12px; cursor: pointer;
+    background: var(--card); border: 1px solid var(--border-soft); border-radius: 14px;
+    transition: transform 140ms var(--ease-out), border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .petdex-card .card-emoji { font-size: 34px; line-height: 1; filter: drop-shadow(0 4px 10px rgba(0,0,0,.3)); }
+  .petdex-card .card-name { font-size: 10px; color: var(--fg); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .petdex-card .card-count { font-size: 10px; color: var(--pet-c); font-variant-numeric: tabular-nums; }
+  .petdex-card.active { border-color: var(--pet-c); box-shadow: 0 0 0 1px var(--pet-c), var(--shadow); transform: translateY(-2px); }
+  .petdex-card:active { transform: scale(0.96); }
+  @media (hover: hover) and (pointer: fine) { .petdex-card:hover { border-color: var(--accent-2); transform: translateY(-2px); } }
+  @media (max-width: 560px) {
+    .petdex-feature { gap: 14px; padding: 16px 16px; }
+    .petdex-art { font-size: 56px; }
+    .petdex-name { font-size: 17px; }
+    .petdex-arrows { flex-direction: column; gap: 6px; }
+  }
   @keyframes petJump {
     0%   { transform: translateY(0) scale(1); }
-    18%  { transform: translateY(-14px) scale(1.08); }
+    18%  { transform: translateY(-16px) scale(1.1); }
     36%  { transform: translateY(0) scale(0.96); }
-    52%  { transform: translateY(-7px) scale(1.04); }
+    52%  { transform: translateY(-8px) scale(1.05); }
     68%  { transform: translateY(0) scale(1); }
     100% { transform: translateY(0) scale(1); }
   }
@@ -729,14 +745,16 @@ let _perModel = []; // running per-model aggregate for the current range/key win
 let _last500 = null; // last-500 instrument panel from the backend (drives top stat cluster)
 let _total = 0, _errors = 0; // running range-filtered TOTAL request/error counts (feed the top Total requests / Errors stats)
 
-// ---- Petdex: a single Pokedex-style screen. Each API key has a pet (emoji +
-// accent) assigned deterministically by name hash. The screen shows ONE pet
-// large; ◀/▶ page through the captured keys; clicking a dex slot focuses that
-// pet. A live request for a key focuses its pet and bounces it, and bumps that
-// key's per-session request count in the slot. `_petCounts` keeps counts.
+// ---- Petdex (petdex.dev-style): a large featured pet screen plus a gallery
+// grid of pet cards. Each API key has a pet (emoji + accent) assigned
+// deterministically by name hash. Counts are ACTIVITY-BASED — real per-key
+// request totals for the active range, seeded from the API's per_model
+// aggregate on every load() and kept in sync by live SSE requests — NOT a
+// per-browser-session counter. A live request focuses and bounces that key's
+// pet; ◀/▶ or clicking a gallery card focuses any pet.
 const _PET_POOL = ['🐾', '🐶', '🐱', '🦊', '🐼', '🐸', '🦉', '🐙', '🦄', '🐢', '🐹', '🐰'];
-const _petCounts = {}; // key -> session-in-progress request count
-let _petSel = null;    // key currently focused on the petdex screen
+let _petCounts = {}; // key -> request count within the active range (activity)
+let _petSel = null;    // key currently focused on the petdex featured screen
 let _petKeys = [];     // captured keys, insertion order
 function _petColor(key) {
   let h = 0;
@@ -753,52 +771,67 @@ function _petDexNo(key) {
   const i = _petKeys.indexOf(key);
   return String(i + 1).padStart(3, '0');
 }
-function _petSelected() {
-  // Keep _petKeys aligned with keyNames (first-seen order preserved).
+function _petRangeLabel() {
+  return ({ today: 'today', '7d': '7 days', '30d': '30 days', all: 'all time' }[shownRange] || '');
+}
+function _petSeedCounts() {
+  // Recompute per-key activity totals from the per_model aggregate (each
+  // model -> users[] gives per-key request counts). Called on every load so
+  // the petdex reflects the real range window instead of a session counter.
+  _petCounts = {};
+  (_perModel || []).forEach(m => (m.users || []).forEach(u => {
+    if (u.key_name) _petCounts[u.key_name] = (_petCounts[u.key_name] || 0) + (u.requests || 0);
+  }));
+}
+function petDexKeyOrder() {
+  // insertion order = first-seen; keep it aligned with keyNames.
   if (!_petKeys.length) _petKeys = [...keyNames];
   _petKeys = _petKeys.filter(k => keyNames.has(k));
   keyNames.forEach(k => { if (!_petKeys.includes(k)) _petKeys.push(k); });
-  if (_petSel && keyNames.has(_petSel)) return _petSel;
-  return _petKeys[0] || (_petSel = null);
 }
 function renderPets() {
   const wrap = $('pets');
   if (!wrap) return;
-  _petSelected();
+  petDexKeyOrder();
   if (!_petKeys.length) { wrap.innerHTML = '<div class="empty">No keys seen yet — pets appear as requests land.</div>'; return; }
-  const active = _petKeys.includes(_petSel) ? _petSel : _petKeys[0];
-  _petSel = active;
+  // Default focus to the busiest pet (activity-based), preserving manual pick.
+  if (!_petSel || !keyNames.has(_petSel)) {
+    _petSel = _petKeys.slice().sort((a, b) => (_petCounts[b] || 0) - (_petCounts[a] || 0))[0];
+  }
+  const active = _petSel;
   const c = _petColor(active);
-  const slots = _petKeys.map(k => {
-    const on = k === active;
-    return `<span class="petdex-slot${on ? ' active' : ''}" data-pet="${esc(k)}" style="--pet-c:${_petColor(k)}">
-              <span class="slot-emoji">${_petEmoji(k)}</span>
-              <span class="slot-name">${esc(k)}</span>
-              <span class="slot-num">${_petCounts[k] || 0}</span>
-            </span>`;
-  }).join('');
+  // Gallery cards sorted by activity (most requests first), like installs.
+  const cards = _petKeys.slice().sort((a, b) => (_petCounts[b] || 0) - (_petCounts[a] || 0))
+    .map(k => {
+      const on = k === active;
+      return `<div class="petdex-card${on ? ' active' : ''}" data-pet="${esc(k)}" style="--pet-c:${_petColor(k)}">
+                <span class="card-emoji">${_petEmoji(k)}</span>
+                <span class="card-name" title="${esc(k)}">${esc(k)}</span>
+                <span class="card-count">${(_petCounts[k] || 0).toLocaleString()}</span>
+              </div>`;
+    }).join('');
   wrap.innerHTML = `<div class="petdex">
-    <div class="petdex-screen" style="--pet-c:${c}">
+    <div class="petdex-feature" style="--pet-c:${c}">
       <div class="petdex-art" id="pd-art">${_petEmoji(active)}</div>
       <div class="petdex-info">
         <div class="petdex-dexno">No. <b>${_petDexNo(active)}</b> · ${esc(active)}</div>
         <div class="petdex-name">${esc(active)}</div>
-        <div class="petdex-count">${_petCounts[active] || 0} requests this session</div>
+        <div class="petdex-count">${(_petCounts[active] || 0).toLocaleString()} <small>requests · ${_petRangeLabel()}</small></div>
       </div>
       <div class="petdex-arrows">
         <button class="toggle" id="pd-prev" title="Previous pet">◀</button>
         <button class="toggle" id="pd-next" title="Next pet">▶</button>
       </div>
     </div>
-    <div class="petdex-slots">${slots}</div>
+    <div class="petdex-gallery">${cards}</div>
   </div>`;
   $('pd-prev').addEventListener('click', () => pagePet(-1));
   $('pd-next').addEventListener('click', () => pagePet(1));
-  wrap.querySelectorAll('.petdex-slot').forEach(s =>
-    s.addEventListener('click', () => { _petSel = s.dataset.pet; renderPets(); }));
+  wrap.querySelectorAll('.petdex-card').forEach(el =>
+    el.addEventListener('click', () => { _petSel = el.getAttribute('data-pet'); renderPets(); }));
 }
 function pagePet(dir) {
-  _petSelected();
+  petDexKeyOrder();
   if (!_petKeys.length) return;
   const i = _petKeys.indexOf(_petSel);
   _petSel = _petKeys[(i + dir + _petKeys.length) % _petKeys.length];
@@ -807,14 +840,14 @@ function pagePet(dir) {
 function petBounce(key) {
   if (!key) return;
   _petCounts[key] = (_petCounts[key] || 0) + 1;
-  // Focus the bouncing pet's dex slot + screen when it's not already shown.
+  // Focus the bouncing pet's featured screen when it's not already shown.
   if (_petSel !== key) { _petSel = key; renderPets(); }
   const art = document.getElementById('pd-art');
   if (!art) return; // petdex not rendered yet
-  const slot = document.querySelector(`.petdex-slot[data-pet="${CSS.escape ? CSS.escape(key) : key.replace(/"/g, '')}"]`);
-  if (slot) slot.querySelector('.slot-num').textContent = _petCounts[key];
+  const card = document.querySelector(`.petdex-card[data-pet="${CSS.escape ? CSS.escape(key) : key.replace(/"/g, '')}"]`);
+  if (card) card.querySelector('.card-count').textContent = (_petCounts[key] || 0).toLocaleString();
   const cnt = document.querySelector('.petdex-count');
-  if (cnt) cnt.textContent = (_petCounts[key] || 0) + ' requests this session';
+  if (cnt) cnt.textContent = (_petCounts[key] || 0).toLocaleString() + ' <small>requests · ' + _petRangeLabel() + '</small>';
   art.classList.remove('bounce');
   void art.offsetWidth; // restart the CSS animation
   art.classList.add('bounce');
@@ -907,6 +940,7 @@ async function load() {
     _inTok = inTok; _outTok = outTok;     // feed realtime prependRow so it keeps the running totals
     _cost = cost; _cacheRead = cacheRead; _cacheWrite = cacheWrite;
     _perModel = data.per_model || [];
+    _petSeedCounts(); // activity-based petdex: seed per-key counts from the real range aggregate
     _total = data.total || 0; _errors = data.errors || 0; // true range-filtered totals for the top stats
     // Last-500 instrument-panel numbers come straight from the backend (the
     // server-side _last500_aggregate). Independent of shownRange/keyName so
